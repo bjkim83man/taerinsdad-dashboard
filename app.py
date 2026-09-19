@@ -4,203 +4,215 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="태린이아빠 | AI 하드웨어 모멘텀", page_icon="📈", layout="wide")
+st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
 
 st.markdown("""
 <style>
-.block-container {padding-top:1.4rem; max-width:1500px;}
-.hero {background:#101a31;border:1px solid #2b3c5d;border-radius:18px;padding:24px;margin-bottom:18px;}
-.hero h1 {color:white;margin:0;font-size:2rem;}
-.hero p {color:#b8c4d8;margin:7px 0 0 0;}
-.card {background:#121c32;border:1px solid #2a3958;border-radius:15px;padding:16px;min-height:120px;}
-.label {color:#9fb0ca;font-size:.9rem;margin-bottom:7px;}
-.value {color:white;font-size:1.9rem;font-weight:800;}
-.sub {color:#8291a8;font-size:.78rem;margin-top:7px;}
-.status {background:#121c32;border-left:5px solid #6ea8fe;border-radius:12px;padding:16px 18px;margin:12px 0 20px;}
-[data-testid="stSidebar"] {background:#0f1728;}
+.block-container{padding-top:1.2rem;max-width:1500px}
+.hero{background:#101a31;border:1px solid #2b3c5d;border-radius:18px;padding:22px;margin-bottom:15px}
+.hero h1{color:#fff;margin:0}.hero p{color:#b8c4d8;margin:6px 0 0}
+.card{background:#121c32;border:1px solid #2a3958;border-radius:14px;padding:15px;min-height:115px}
+.label{color:#aab8cd;font-size:.86rem}.value{color:#fff;font-size:1.65rem;font-weight:800;margin-top:5px}
+.sub{color:#8e9db4;font-size:.76rem;margin-top:6px}
+[data-testid="stSidebar"]{background:#0f1728}
 </style>
 """, unsafe_allow_html=True)
 
-STOCKS = {
-    "NVDA":"NVDA","AVGO":"AVGO","AMD":"AMD","TSM":"TSM","ASML":"ASML","MU":"MU","ARM":"ARM",
-    "QCOM":"QCOM","MRVL":"MRVL","LRCX":"LRCX","AMAT":"AMAT","KLAC":"KLAC","CDNS":"CDNS","SNPS":"SNPS",
-    "ANET":"ANET","TXN":"TXN","ON":"ON","DELL":"DELL","Sandisk":"SNDK","Intel":"INTC","Amkor":"AMKR",
-    "WesternDigital":"WDC","Seagate":"STX","Lumentum":"LITE","Corning":"GLW","AsteraLabs":"ALAB",
-    "Samsung":"005930.KS","SKHynix":"000660.KS","SamsungElectroMechanics":"009150.KS",
-    "TokyoElectron":"8035.T","Advantest":"6857.T","Disco":"6146.T","Lasertec":"6920.T","SCREEN":"7735.T",
-    "Socionext":"6526.T","Murata":"6981.T","Kioxia":"285A.T","UMC":"UMC","ASE":"ASX","Himax":"HIMX","SiliconMotion":"SIMO"
-}
-PERIODS={"1M":21,"2M":42,"3M":63,"6M":126}
-
-def classify_risk(row):
-    s=row["Breadth_Score_MA5"]; s5=row["Slope_5D"]; s10=row["Slope_10D"]
-    if pd.isna(s): return "데이터 부족"
-    if row["Strong_Bearish_Divergence"]: return "피크아웃 강경고"
-    if row["Bearish_Divergence"]: return "피크아웃 경고"
-    if s>=70 and s5>=0: return "강세"
-    if s>=70 and s5<0: return "고점 경계"
-    if s>=60: return "정상"
-    if s>=50: return "주의" if s5<0 else "중립"
-    if s>=35: return "위험" if s10<0 else "약세 반등"
-    return "투매 진행" if s5<0 else "투매 후 반등"
+def card(label, value, sub=""):
+    st.markdown(f'<div class="card"><div class="label">{label}</div><div class="value">{value}</div><div class="sub">{sub}</div></div>', unsafe_allow_html=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_data():
-    raw=yf.download(list(STOCKS.values()),period="3y",auto_adjust=True,progress=False,group_by="column",threads=True)
-    prices=raw["Close"].copy()
-    prices=prices.rename(columns={v:k for k,v in STOCKS.items()}).sort_index().ffill(limit=5)
-    valid=prices.columns[prices.notna().sum()>=220]
-    excluded=[c for c in prices.columns if c not in valid]
-    prices=prices[valid]
+def dl(tickers, period="3y", interval="1d"):
+    x = yf.download(tickers, period=period, interval=interval, auto_adjust=True, progress=False, threads=True)
+    if isinstance(x.columns, pd.MultiIndex):
+        close=x["Close"].copy()
+    else:
+        close=x[["Close"]].copy()
+        if isinstance(tickers,str): close.columns=[tickers]
+    return close.dropna(how="all").sort_index()
 
+# ---------- Canary ----------
+@st.cache_data(ttl=3600, show_spinner=False)
+def canary():
+    p=dl(["QQQ","TIP"],"3y")
+    vals={}
+    for t in ["QQQ","TIP"]:
+        s=p[t].dropna()
+        vals[t]=np.mean([(s.iloc[-1]/s.shift(n).iloc[-1]-1) for n in [21,63,126,252]])
+    return p.index[-1], vals, ("공격 모드" if vals["QQQ"]>0 and vals["TIP"]>0 else "방어 모드")
+
+# ---------- Monthly trend ----------
+@st.cache_data(ttl=3600, show_spinner=False)
+def trend_strategy():
+    p=dl(["QQQ","TIP","QLD","SOXX","SPMO","PSQ"],"16y","1mo")
+    # remove possibly incomplete current month
+    now=pd.Timestamp.today()
+    if len(p) and p.index[-1].year==now.year and p.index[-1].month==now.month:
+        p=p.iloc[:-1]
+    q=p["QQQ"].dropna(); tip=p["TIP"].dropna()
+    qma=q.rolling(6).mean(); tma=tip.rolling(6).mean()
+    d=min(q.index[-1],tip.index[-1])
+    up=bool(q.loc[d]>qma.loc[d] and tip.loc[d]>tma.loc[d])
+    alloc="QQQ 60% · QLD 15% · SOXX 25%" if up else "SPMO 50% · PSQ 50%"
+    return d,up,alloc,q.loc[d],qma.loc[d],tip.loc[d],tma.loc[d]
+
+# ---------- AI Hardware ----------
+AI={"NVDA":"NVDA","AVGO":"AVGO","AMD":"AMD","TSM":"TSM","ASML":"ASML","MU":"MU","ARM":"ARM",
+"LRCX":"LRCX","AMAT":"AMAT","KLAC":"KLAC","ANET":"ANET","DELL":"DELL","WDC":"WDC","STX":"STX",
+"LITE":"LITE","GLW":"GLW","ALAB":"ALAB","Samsung":"005930.KS","SKHynix":"000660.KS",
+"TokyoElectron":"8035.T","Advantest":"6857.T","Disco":"6146.T","Lasertec":"6920.T","Murata":"6981.T"}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def ai_hw():
+    raw=dl(list(AI.values()),"3y").rename(columns={v:k for k,v in AI.items()}).ffill(limit=5)
+    raw=raw.loc[:,raw.notna().sum()>=220]
+    ma20=raw.rolling(20,min_periods=15).mean(); ma60=raw.rolling(60,min_periods=45).mean(); ma200=raw.rolling(200,min_periods=160).mean()
+    r60=raw.pct_change(60,fill_method=None)
+    def pct(cond,avail): return cond.sum(axis=1)/avail.replace(0,np.nan)*100
+    b=pd.DataFrame(index=raw.index)
+    b["MA20"]=pct((raw>ma20)&ma20.notna(),ma20.notna().sum(axis=1))
+    b["MA60"]=pct((raw>ma60)&ma60.notna(),ma60.notna().sum(axis=1))
+    b["MA200"]=pct((raw>ma200)&ma200.notna(),ma200.notna().sum(axis=1))
+    b["P60"]=pct(r60>0,r60.notna().sum(axis=1))
+    b["Score"]=b.MA20*.2+b.MA60*.35+b.MA200*.25+b.P60*.2
+    b["MA5"]=b.Score.rolling(5,min_periods=3).mean()
+    b["Slope5"]=b.MA5-b.MA5.shift(5); b["Slope10"]=b.MA5-b.MA5.shift(10)
+    last=b.dropna(subset=["MA5"]).iloc[-1]
+    if last.MA5>=70 and last.Slope5>=0: risk="강세"
+    elif last.MA5>=70: risk="고점 경계"
+    elif last.MA5>=60: risk="정상"
+    elif last.MA5>=50: risk="주의" if last.Slope5<0 else "중립"
+    elif last.MA5>=35: risk="위험" if last.Slope10<0 else "약세 반등"
+    else: risk="투매 진행" if last.Slope5<0 else "투매 후 반등"
+    return b,risk
+
+# ---------- 52W live signal (dashboard-light version) ----------
+SECTORS={"XLK":"Technology","XLC":"Communication","XLY":"Discretionary","XLP":"Staples","XLI":"Industrials",
+"XLB":"Materials","XLE":"Energy","XLF":"Financials","XLV":"Health Care","XLU":"Utilities","XLRE":"Real Estate",
+"SOXX":"Semiconductors","IGV":"Software","SKYY":"Cloud","FDN":"Internet","XOP":"Oil & Gas","OIH":"Oil Services",
+"CRAK":"Refining","AMLP":"Energy Infrastructure","URA":"Uranium","KRE":"Regional Banks","IAI":"Broker Dealers",
+"KIE":"Insurance","BIZD":"BDC","IBB":"Biotech","IHI":"Medical Devices","IHF":"Health Providers","IHE":"Pharma",
+"XRT":"Retail","XHB":"Homebuilders","PEJ":"Leisure","PBJ":"Food & Beverage","ITA":"Defense","IYT":"Transportation",
+"AIRR":"Industrial Renaissance","GDX":"Gold Miners","SIL":"Silver Miners","SLX":"Steel","COPX":"Copper",
+"REMX":"Rare Earth","MOO":"Agribusiness","WOOD":"Timber","ICLN":"Clean Energy","TAN":"Solar","FAN":"Wind",
+"GRID":"Smart Grid","IYZ":"Telecom","LIT":"Lithium","SEA":"Shipping","CARZ":"Auto","UFO":"Space","ROBO":"Robotics"}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def high52_live():
+    tick=["SPY"]+list(SECTORS)
+    p=dl(tick,"3y").ffill(limit=3)
+    spy=p["SPY"]; sec=p[[x for x in SECTORS if x in p.columns]]
+    rr=sec.div(spy,axis=0)
+    rs=rr/rr.shift(126)-1
+    prev=sec.shift(1).rolling(252,min_periods=252).max()
+    br=sec>prev
+    ma20=sec.rolling(20).mean()
+    d=sec.index[-1]
+    rs_today=rs.loc[d].dropna().sort_values(ascending=False)
+    ranks=pd.Series(range(1,len(rs_today)+1),index=rs_today.index)
+    top=rs_today.head(20)
+    candidates=[t for t in top.index if bool(br.loc[d,t])]
     rows=[]
-    for p,d in PERIODS.items():
-        r=prices.pct_change(d,fill_method=None).iloc[-1].dropna()
-        pos=int((r>0).sum()); neg=int((r<0).sum()); zero=int((r==0).sum()); total=len(r)
-        rows.append({"Period":p,"Positive":pos,"Negative":neg,"Zero":zero,"Total":total,
-                     "Positive_Ratio":pos/total*100 if total else np.nan,
-                     "Negative_Ratio":neg/total*100 if total else np.nan})
-    count_table=pd.DataFrame(rows).set_index("Period")
-
-    ma20=prices.rolling(20,min_periods=15).mean()
-    ma60=prices.rolling(60,min_periods=45).mean()
-    ma200=prices.rolling(200,min_periods=160).mean()
-    ret60=prices.pct_change(60,fill_method=None)
-
-    def pct_above(cond, avail):
-        return cond.sum(axis=1)/avail.replace(0,np.nan)*100
-
-    a20=pct_above((prices>ma20)&prices.notna()&ma20.notna(),(prices.notna()&ma20.notna()).sum(axis=1))
-    a60=pct_above((prices>ma60)&prices.notna()&ma60.notna(),(prices.notna()&ma60.notna()).sum(axis=1))
-    a200=pct_above((prices>ma200)&prices.notna()&ma200.notna(),(prices.notna()&ma200.notna()).sum(axis=1))
-    p60=pct_above((ret60>0)&ret60.notna(),ret60.notna().sum(axis=1))
-
-    b=pd.DataFrame({"Above_MA20":a20,"Above_MA60":a60,"Above_MA200":a200,"Positive_60D":p60})
-    b["Breadth_Score"]=b["Above_MA20"]*.20+b["Above_MA60"]*.35+b["Above_MA200"]*.25+b["Positive_60D"]*.20
-    b["Breadth_Score_MA5"]=b["Breadth_Score"].rolling(5,min_periods=3).mean()
-    b["Breadth_Diff"]=b["Breadth_Score"]-b["Breadth_Score_MA5"]
-    b["Slope_3D"]=b["Breadth_Score_MA5"]-b["Breadth_Score_MA5"].shift(3)
-    b["Slope_5D"]=b["Breadth_Score_MA5"]-b["Breadth_Score_MA5"].shift(5)
-    b["Slope_10D"]=b["Breadth_Score_MA5"]-b["Breadth_Score_MA5"].shift(10)
-    b["Falling_Days_10D"]=b["Breadth_Score_MA5"].diff().lt(0).rolling(10).sum()
-
-    first=prices.apply(lambda c:c.dropna().iloc[0] if not c.dropna().empty else np.nan)
-    norm=prices.divide(first,axis=1)*100
-    b["AI_Tech_Index"]=norm.mean(axis=1)
-    idx_high=b["AI_Tech_Index"].rolling(20).max()
-    br_high=b["Breadth_Score_MA5"].rolling(20).max()
-    b["Index_Near_20D_High"]=b["AI_Tech_Index"]>=idx_high*.99
-    b["Breadth_From_20D_High"]=b["Breadth_Score_MA5"]-br_high
-    b["Bearish_Divergence"]=b["Index_Near_20D_High"]&(b["Breadth_From_20D_High"]<=-10)&(b["Slope_5D"]<0)
-    b["Strong_Bearish_Divergence"]=b["Index_Near_20D_High"]&(b["Breadth_From_20D_High"]<=-20)&(b["Slope_10D"]<0)
-    b["Risk_Level"]=b.apply(classify_risk,axis=1)
-
-    latest=b.dropna(subset=["Breadth_Score_MA5"]).iloc[-1]
-    latest_date=b.dropna(subset=["Breadth_Score_MA5"]).index[-1]
-    return prices,b,count_table,latest,latest_date,excluded
-
-def card(label,value,sub=""):
-    st.markdown(f'<div class="card"><div class="label">{label}</div><div class="value">{value}</div><div class="sub">{sub}</div></div>',unsafe_allow_html=True)
+    for t in candidates:
+        rows.append({"Ticker":t,"Industry":SECTORS[t],"6M RS vs SPY":rs_today[t],"RS Rank":int(ranks[t]),
+                     "Close":sec.loc[d,t],"MA20":ma20.loc[d,t]})
+    return d,pd.DataFrame(rows)
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("AI Hardware Momentum")
-    st.write("Colab 로직을 Streamlit에서 직접 실행합니다.")
+    st.caption("Market Dashboard · v2")
     if st.button("🔄 최신 데이터 새로고침",use_container_width=True):
         st.cache_data.clear(); st.rerun()
+    st.info("유동성·Fear & Greed는 다음 연결 단계에서 기존 Colab 원본 로직을 그대로 붙입니다.")
 
-st.markdown('<div class="hero"><h1>AI 하드웨어 모멘텀 대시보드</h1><p>Breadth · 추세 확산 · 다이버전스 · 피크아웃 위험</p></div>',unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>태린이아빠 Market Dashboard</h1><p>시장환경 → 리스크 → 추세 → 전략 신호를 한 화면에서 확인</p></div>',unsafe_allow_html=True)
 
-try:
-    with st.spinner("최신 데이터를 계산 중입니다..."):
-        prices,b,count_table,latest,latest_date,excluded=load_data()
-except Exception as e:
-    st.error("데이터 계산 중 오류가 발생했습니다.")
-    st.exception(e)
-    st.stop()
+tabs=st.tabs(["종합","유동성","Fear & Greed","카나리아","미국 추세","52주 신고가","52W + Rotation","AI 하드웨어"])
 
-level=latest["Risk_Level"]
-st.caption(f"기준일 {latest_date.date()} · 분석 종목 {len(prices.columns)}개")
+with tabs[0]:
+    st.subheader("미국 시장 종합 신호")
+    try:
+        cd,cv,cm=canary(); td,up,alloc,*_=trend_strategy(); b,risk=ai_hw(); hd,hc=high52_live()
+        a,b1,c,d=st.columns(4)
+        with a: card("카나리아",cm,f"QQQ {cv['QQQ']:+.1%} · TIP {cv['TIP']:+.1%}")
+        with b1: card("미국 추세","상승추세" if up else "하락추세",alloc)
+        with c: card("AI Hardware",risk,f"Breadth {b['MA5'].iloc[-1]:.1f}")
+        with d: card("52W 신규 후보",f"{len(hc)}개",f"기준 {hd.date()}")
+        st.caption("유동성과 Fear & Greed는 원본 코드 연결 후 종합화면에도 자동 추가됩니다.")
+    except Exception as e: st.error(f"계산 오류: {e}")
 
-c1,c2,c3,c4=st.columns(4)
-with c1: card("현재 위험 단계",level,"Breadth + 기울기 + 다이버전스")
-with c2: card("Breadth Score MA5",f"{latest['Breadth_Score_MA5']:.1f}","0~100")
-with c3: card("5일 기울기",f"{latest['Slope_5D']:+.1f}","최근 확산 속도")
-with c4: card("20일 고점 대비 Breadth",f"{latest['Breadth_From_20D_High']:+.1f}","음수 확대 시 내부 약화")
+with tabs[1]:
+    st.subheader("미국 유동성 환경")
+    st.info("첫 번째 Colab의 Fed/Treasury 유동성 + 민간신용 로직 연결 자리입니다. 원본 계산식을 바꾸지 않고 결과 카드·차트만 이 탭에 표시합니다.")
 
-if level in ["피크아웃 강경고","피크아웃 경고"]:
-    msg="지수는 고점권인데 내부 Breadth가 약해지는 다이버전스가 포착된 구간입니다."
-elif level in ["고점 경계","주의"]:
-    msg="절대 Breadth 수준보다 최근 기울기 둔화를 더 주의해서 볼 구간입니다."
-elif level in ["강세","정상"]:
-    msg="AI 하드웨어 내부 확산은 아직 비교적 양호한 구간입니다."
-else:
-    msg="AI 하드웨어 내부 확산이 약한 구간입니다."
-st.markdown(f'<div class="status"><b>현재 해석</b><br>{msg}</div>',unsafe_allow_html=True)
+with tabs[2]:
+    st.subheader("Fear & Greed Oscillator")
+    st.info("Fear & Greed 원본 코드 연결 자리입니다. 현재값, 구간, 변화 방향, 오실레이터 차트를 표시하도록 준비했습니다.")
 
-st.subheader("AI 하드웨어 내부 확산")
-x1,x2,x3,x4=st.columns(4)
-with x1: card("20일선 위",f"{latest['Above_MA20']:.1f}%","단기")
-with x2: card("60일선 위",f"{latest['Above_MA60']:.1f}%","중기")
-with x3: card("200일선 위",f"{latest['Above_MA200']:.1f}%","장기")
-with x4: card("60일 수익률 +",f"{latest['Positive_60D']:.1f}%","상승 종목 확산")
+with tabs[3]:
+    st.subheader("카나리아 자산 · QQQ & TIP")
+    try:
+        d,v,mode=canary()
+        c1,c2,c3=st.columns(3)
+        with c1: card("신호",mode,f"기준 {d.date()}")
+        with c2: card("QQQ 모멘텀",f"{v['QQQ']:+.2%}","1M·3M·6M·12M 단순평균")
+        with c3: card("TIP 모멘텀",f"{v['TIP']:+.2%}","둘 다 양수면 공격")
+    except Exception as e: st.error(e)
 
-left,right=st.columns([1,1.6])
-with left:
-    ct=count_table.reset_index()
-    fig=go.Figure()
-    fig.add_bar(x=ct["Period"],y=ct["Positive"],name="상승")
-    fig.add_bar(x=ct["Period"],y=ct["Negative"],name="하락")
-    fig.update_layout(title="기간별 상승·하락 종목 수",barmode="group",height=370,template="plotly_dark",legend_orientation="h")
-    st.plotly_chart(fig,use_container_width=True)
+with tabs[4]:
+    st.subheader("미국 추세시 / 위기시 로테이션")
+    try:
+        d,up,alloc,q,qma,t,tma=trend_strategy()
+        c1,c2,c3=st.columns(3)
+        with c1: card("현재 추세","상승추세" if up else "하락추세",f"{d.strftime('%Y-%m')} 완성 월봉")
+        with c2: card("QQQ vs 6M MA",f"{q:.2f} / {qma:.2f}","QQQ가 6개월선 위인지 확인")
+        with c3: card("TIP vs 6M MA",f"{t:.2f} / {tma:.2f}","TIP도 동시에 위여야 상승")
+        st.markdown("### 다음 달 목표 포트폴리오")
+        st.success(alloc)
+    except Exception as e: st.error(e)
 
-with right:
-    v=b.tail(180)
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=v.index,y=v["Above_MA20"],name="MA20 위"))
-    fig.add_trace(go.Scatter(x=v.index,y=v["Above_MA60"],name="MA60 위"))
-    fig.add_trace(go.Scatter(x=v.index,y=v["Above_MA200"],name="MA200 위"))
-    for y in [70,50,30]: fig.add_hline(y=y,line_dash="dash",opacity=.3)
-    fig.update_layout(title="Moving Average Breadth · 최근 180거래일",height=370,template="plotly_dark",yaxis_range=[0,100],legend_orientation="h")
-    st.plotly_chart(fig,use_container_width=True)
+with tabs[5]:
+    st.subheader("52주 신고가 전략")
+    st.caption("6개월 SPY 대비 RS Top20 + 직전 252거래일 신고가 돌파 후보")
+    try:
+        d,x=high52_live()
+        c1,c2=st.columns(2)
+        with c1: card("기준일",str(d.date()),"Yahoo Finance")
+        with c2: card("현재 신규 후보",f"{len(x)}개","최대 4종목 운용 전략")
+        if x.empty: st.info("오늘 조건을 동시에 만족하는 신규 후보가 없습니다.")
+        else:
+            y=x.copy(); y["6M RS vs SPY"]=y["6M RS vs SPY"].map(lambda z:f"{z:+.2%}")
+            st.dataframe(y,use_container_width=True,hide_index=True)
+        st.warning("v2에서는 현재 후보를 먼저 표시합니다. 기존 보유·MA20 매도·거래내역까지 포함한 완전한 상태 추적은 Rotation 원본 엔진 연결 시 함께 붙입니다.")
+    except Exception as e: st.error(e)
 
-st.subheader("Breadth Score와 둔화 속도")
-l,r=st.columns(2)
-with l:
-    v=b.tail(260)
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=v.index,y=v["Breadth_Score"],name="Daily Score",opacity=.3))
-    fig.add_trace(go.Scatter(x=v.index,y=v["Breadth_Score_MA5"],name="MA5",line=dict(width=3)))
-    for y in [70,60,50,35]: fig.add_hline(y=y,line_dash="dash",opacity=.25)
-    fig.update_layout(title="AI Tech Breadth Score",height=400,template="plotly_dark",yaxis_range=[0,100],legend_orientation="h")
-    st.plotly_chart(fig,use_container_width=True)
-with r:
-    v=b.tail(260)
-    fig=go.Figure()
-    fig.add_trace(go.Scatter(x=v.index,y=v["Slope_5D"],name="5D Slope"))
-    fig.add_trace(go.Scatter(x=v.index,y=v["Slope_10D"],name="10D Slope"))
-    fig.add_hline(y=0,opacity=.5)
-    fig.update_layout(title="Breadth Slope",height=400,template="plotly_dark",legend_orientation="h")
-    st.plotly_chart(fig,use_container_width=True)
+with tabs[6]:
+    st.subheader("52W + Weak Regime Rotation_B")
+    st.info("원본 MASTER의 상태 추적 백테스트 엔진을 연결할 자리입니다.")
+    st.markdown("""
+**원본 규칙**
+- NORMAL_52W: 6개월 SPY 대비 RS Top20 + 52주 신고가
+- WEAK_ROTATION: 순수 52W의 최근 20D SPY 대비 초과수익 ≤ -1%
+- 약세 신규 후보: 5D SPY 대비 강세 + 20D RS 순위 10일간 10등 이상 개선 + 20D 신고가
+- 기존 보유는 Regime 변화만으로 팔지 않고 설정된 매도 MA 이탈 때 매도
+""")
 
-st.subheader("AI Tech 지수 vs Breadth — 피크아웃 체크")
-v=b.tail(300)
-fig=go.Figure()
-fig.add_trace(go.Scatter(x=v.index,y=v["AI_Tech_Index"],name="AI Tech 동일가중 지수",yaxis="y1"))
-fig.add_trace(go.Scatter(x=v.index,y=v["Breadth_Score_MA5"],name="Breadth Score MA5",yaxis="y2"))
-for d in v.index[v["Strong_Bearish_Divergence"].fillna(False)]:
-    fig.add_vline(x=d,opacity=.18,line_width=7)
-fig.update_layout(height=480,template="plotly_dark",legend_orientation="h",
-                  yaxis=dict(title="AI Tech Index"),
-                  yaxis2=dict(title="Breadth Score",overlaying="y",side="right",range=[0,100]))
-st.plotly_chart(fig,use_container_width=True)
-
-d1,d2,d3=st.columns(3)
-with d1: card("Bearish Divergence","YES" if bool(latest["Bearish_Divergence"]) else "NO","고점권 + Breadth 약화")
-with d2: card("Strong Divergence","YES" if bool(latest["Strong_Bearish_Divergence"]) else "NO","강한 피크아웃 경고")
-with d3: card("최근 10일 Breadth 하락일",f"{latest['Falling_Days_10D']:.0f}일","MA5 일간 변화 기준")
-
-with st.expander("최근 30거래일 상세 데이터"):
-    cols=["Above_MA20","Above_MA60","Above_MA200","Positive_60D","Breadth_Score_MA5","Breadth_Diff","Slope_5D","Slope_10D","Breadth_From_20D_High","Bearish_Divergence","Strong_Bearish_Divergence","Risk_Level"]
-    st.dataframe(b[cols].tail(30),use_container_width=True)
+with tabs[7]:
+    st.subheader("AI 하드웨어 모멘텀")
+    try:
+        b,risk=ai_hw(); last=b.iloc[-1]
+        c1,c2,c3,c4=st.columns(4)
+        with c1: card("위험 단계",risk,"AI 하드웨어 내부 확산")
+        with c2: card("Breadth MA5",f"{last.MA5:.1f}","0~100")
+        with c3: card("5D Slope",f"{last.Slope5:+.1f}","둔화 속도")
+        with c4: card("60일 수익률 +",f"{last.P60:.1f}%","상승 종목 비율")
+        v=b.tail(180)
+        fig=go.Figure()
+        fig.add_trace(go.Scatter(x=v.index,y=v.MA20,name="MA20 위"))
+        fig.add_trace(go.Scatter(x=v.index,y=v.MA60,name="MA60 위"))
+        fig.add_trace(go.Scatter(x=v.index,y=v.MA200,name="MA200 위"))
+        fig.update_layout(template="plotly_dark",height=430,yaxis_range=[0,100],legend_orientation="h")
+        st.plotly_chart(fig,use_container_width=True)
+    except Exception as e: st.error(e)
