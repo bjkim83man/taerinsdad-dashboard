@@ -179,7 +179,7 @@ IS_ADMIN = check_admin_password()
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v8.1")
+    st.caption("Market Dashboard · LIVE v8")
     st.info("자동 업데이트 OFF")
     st.caption("각 항목의 '최신 데이터 업데이트' 버튼을 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
 
@@ -194,19 +194,19 @@ def updated_caption(key):
     t=st.session_state.get(key+"_updated")
     st.caption("마지막 업데이트: " + (t if t else "아직 업데이트하지 않음"))
 
-tabs = st.tabs([
-    "미국 유동성",
-    "미국 과열·공포",
-    "미국 위험신호",
-    "미국 추세전략",
-    "미국 주도주",
-    "AI·반도체",
-    "미국 주도업종",
-    "한국 주도업종",
-    "한국 펀더멘털",
-    "계절성 분석",
-    "컨센서스 시계열",
-])
+
+# 안전한 세션 상태 초기화: 배포/재시작/기존 브라우저 세션에서도 KeyError 방지
+_SAFE_STATE_DEFAULTS = {
+    "liq_result": None, "fg_result": None, "canary_result": None, "trend_result": None,
+    "rotation_result": None, "ai_result": None, "us_sector_result": None, "kr_sector_result": None,
+    "liq_updated": None, "fg_updated": None, "canary_updated": None, "trend_updated": None,
+    "rotation_updated": None, "ai_updated": None, "us_sector_updated": None, "kr_sector_updated": None,
+}
+for _k, _v in _SAFE_STATE_DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+tabs=st.tabs(["미국 유동성","미국 과열·공포","미국 위험신호","미국 추세전략","미국 주도주","AI·반도체","미국 주도업종","한국 주도업종"])
 
 
 with tabs[0]:
@@ -399,14 +399,8 @@ with tabs[7]:
     else:
         st.caption("최신 저장 결과를 조회하는 화면입니다.")
     updated_caption("kr_sector")
-    r=st.session_state.get("kr_sector_result")
-    # 배포/코드 변경 뒤 이전 세션에 남은 비호환 결과가 있으면 안전하게 무시
-    if r is not None and (not isinstance(r, (tuple, list)) or len(r) < 3):
-        st.session_state.kr_sector_result = None
-        r = None
-    if r is None:
-        st.info("저장된 결과가 없습니다. 관리자가 최신 엑셀을 업로드한 뒤 계산하세요.")
-    else:
+    r=st.session_state.kr_sector_result
+    if r is not None:
         if r[0]:
             ns=r[1]
             mdf=ns.get("mansfield_df_70")
@@ -433,114 +427,3 @@ with tabs[7]:
         else:
             st.error("한국 시장 주도업종 계산 오류")
             st.code(r[2][-16000:],language="text")
-
-
-# ============================================================
-# V8 추가 탭 1: 펀더멘털 지표 활용 주도업종
-# ============================================================
-with tabs[8]:
-    st.header("한국 펀더멘털 · 주도업종")
-    st.caption("펀더멘털 파일의 맨 왼쪽 첫 시트(업종 1개월 컨센) 결과만 표시합니다.")
-
-    if IS_ADMIN:
-        fundamental_file = st.file_uploader(
-            "📂 펀더멘털 지표 활용 주도업종 찾기 파일 업로드",
-            type=["xlsx", "xlsm"],
-            key="fundamental_excel"
-        )
-        if fundamental_file is not None:
-            if st.button("▶ 펀더멘털 결과 업데이트", key="run_fundamental"):
-                with st.spinner("첫 번째 시트 결과를 읽는 중..."):
-                    st.session_state.fundamental_result = read_excel_result(
-                        fundamental_file.getvalue(), sheet_name=0
-                    )
-                    st.session_state.fundamental_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        st.caption("최신 저장 결과를 조회하는 화면입니다.")
-
-    if st.session_state.fundamental_updated:
-        st.caption(f"마지막 업데이트: {st.session_state.fundamental_updated}")
-
-    if st.session_state.fundamental_result is None:
-        st.info("저장된 결과가 없습니다. 관리자가 엑셀을 업로드한 뒤 업데이트하세요.")
-    else:
-        render_excel_result_table(st.session_state.fundamental_result, height=760)
-
-
-# ============================================================
-# V8 추가 탭 2: 계절성 분석
-# ============================================================
-with tabs[9]:
-    st.header("시장 계절성 · 월평균 수익률")
-    st.caption("계절성 분석 파일의 '월평균수익률' 시트에 있는 그래프 데이터만 정리해서 보여줍니다.")
-
-    if IS_ADMIN:
-        seasonality_file = st.file_uploader(
-            "📂 계절성 분석 파일 업로드",
-            type=["xlsx", "xlsm"],
-            key="seasonality_excel"
-        )
-        if seasonality_file is not None:
-            if st.button("▶ 계절성 그래프 업데이트", key="run_seasonality"):
-                st.session_state.seasonality_bytes = seasonality_file.getvalue()
-                st.session_state.seasonality_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        st.caption("최신 저장 결과를 조회하는 화면입니다.")
-
-    if st.session_state.seasonality_updated:
-        st.caption(f"마지막 업데이트: {st.session_state.seasonality_updated}")
-
-    if st.session_state.seasonality_bytes is None:
-        st.info("저장된 결과가 없습니다. 관리자가 엑셀을 업로드한 뒤 업데이트하세요.")
-    else:
-        render_seasonality_charts(st.session_state.seasonality_bytes)
-
-
-# ============================================================
-# V8 추가 탭 3: 컨센서스 시계열
-# ============================================================
-with tabs[10]:
-    st.header("컨센서스 시계열 · 시가총액 구간별")
-    st.caption("두 개의 컨센서스 파일을 한 코너에서 함께 보여주며, 각 파일의 맨 왼쪽 첫 시트 결과만 표시합니다.")
-
-    if IS_ADMIN:
-        c1, c2 = st.columns(2)
-        with c1:
-            consensus_file_1 = st.file_uploader(
-                "📂 컨센서스 파일 · 시총 1~150",
-                type=["xlsx", "xlsm"],
-                key="consensus_excel_1"
-            )
-        with c2:
-            consensus_file_2 = st.file_uploader(
-                "📂 컨센서스 파일 · 시총 151~300",
-                type=["xlsx", "xlsm"],
-                key="consensus_excel_2"
-            )
-
-        if consensus_file_1 is not None and consensus_file_2 is not None:
-            if st.button("▶ 컨센서스 시계열 결과 업데이트", key="run_consensus"):
-                with st.spinner("두 파일의 첫 번째 시트를 읽는 중..."):
-                    st.session_state.consensus_1_result = read_excel_result(
-                        consensus_file_1.getvalue(), sheet_name=0
-                    )
-                    st.session_state.consensus_2_result = read_excel_result(
-                        consensus_file_2.getvalue(), sheet_name=0
-                    )
-                    st.session_state.consensus_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        st.caption("최신 저장 결과를 조회하는 화면입니다.")
-
-    if st.session_state.consensus_updated:
-        st.caption(f"마지막 업데이트: {st.session_state.consensus_updated}")
-
-    if st.session_state.consensus_1_result is None or st.session_state.consensus_2_result is None:
-        st.info("저장된 결과가 없습니다. 관리자가 시가총액 구간별 파일 2개를 업로드한 뒤 업데이트하세요.")
-    else:
-        left, right = st.columns(2)
-        with left:
-            st.subheader("시가총액 1~150")
-            render_excel_result_table(st.session_state.consensus_1_result, height=760)
-        with right:
-            st.subheader("시가총액 151~300")
-            render_excel_result_table(st.session_state.consensus_2_result, height=760)
