@@ -7,8 +7,154 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import io, contextlib, traceback, time
+import base64, pickle, requests
 
 st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
+
+
+# ============================================================
+# v10: GitHub 영구 저장
+# - 앱 접속은 저장된 결과만 읽음
+# - 관리자 업데이트 때만 계산 후 GitHub data repo에 저장
+# - 별도 data repo 사용 권장: 저장할 때 Streamlit 앱 자체가 재배포되지 않음
+# ============================================================
+GH_OWNER = st.secrets.get("GITHUB_OWNER", "bjkim83man")
+GH_DATA_REPO = st.secrets.get("GITHUB_DATA_REPO", "taerinsdad-dashboard-data")
+GH_BRANCH = st.secrets.get("GITHUB_BRANCH", "main")
+GH_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+
+def _gh_headers():
+    h = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if GH_TOKEN:
+        h["Authorization"] = f"Bearer {GH_TOKEN}"
+    return h
+
+def _png_marker(fig):
+    try:
+        b = io.BytesIO()
+        fig.savefig(b, format="png", dpi=135, bbox_inches="tight")
+        return {"__dashboard_png__": True, "data": b.getvalue()}
+    except Exception:
+        return None
+
+def _storage_safe(obj, depth=0):
+    """계산 namespace에서 화면 재현에 필요한 직렬화 가능한 값만 남긴다."""
+    if depth > 8:
+        return None
+    if obj is None or isinstance(obj, (str, int, float, bool, bytes)):
+        return obj
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, (pd.DataFrame, pd.Series, pd.Index, pd.Timestamp)):
+        return obj
+    if isinstance(obj, datetime):
+        return obj
+    # matplotlib figure -> PNG bytes (가볍고 재시작 후에도 안전)
+    if hasattr(obj, "savefig") and obj.__class__.__name__ == "Figure":
+        return _png_marker(obj)
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if callable(v):
+                continue
+            sv = _storage_safe(v, depth + 1)
+            if sv is not None:
+                out[k] = sv
+        return out
+    if isinstance(obj, (list, tuple)):
+        vals = []
+        for v in obj:
+            sv = _storage_safe(v, depth + 1)
+            if sv is not None:
+                vals.append(sv)
+        return tuple(vals) if isinstance(obj, tuple) else vals
+    # numpy arrays are useful in some results
+    if isinstance(obj, np.ndarray):
+        return obj
+    return None
+
+def _render_saved_fig(fig):
+    if isinstance(fig, dict) and fig.get("__dashboard_png__"):
+        st.image(fig["data"], use_container_width=True)
+    else:
+        try:
+            st.pyplot(fig, use_container_width=True)
+        except Exception:
+            pass
+
+def github_save_result(key, result, updated):
+    if not GH_TOKEN:
+        return False, "GITHUB_TOKEN이 Secrets에 없습니다."
+    payload_obj = {
+        "key": key,
+        "updated": updated,
+        "result": _storage_safe(result),
+        "format_version": 1,
+    }
+    raw = pickle.dumps(payload_obj, protocol=pickle.HIGHEST_PROTOCOL)
+    path = f"dashboard_data/{key}.pkl"
+    url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}/contents/{path}"
+
+    # 기존 파일이면 sha가 필요함
+    g = requests.get(url, headers=_gh_headers(), params={"ref": GH_BRANCH}, timeout=30)
+    sha = g.json().get("sha") if g.status_code == 200 else None
+
+    body = {
+        "message": f"Update dashboard result: {key} ({updated})",
+        "content": base64.b64encode(raw).decode("ascii"),
+        "branch": GH_BRANCH,
+    }
+    if sha:
+        body["sha"] = sha
+
+    r = requests.put(url, headers=_gh_headers(), json=body, timeout=90)
+    if r.status_code in (200, 201):
+        return True, f"GitHub 저장 완료 ({len(raw)/1024/1024:.1f} MB)"
+    try:
+        detail = r.json().get("message", r.text)
+    except Exception:
+        detail = r.text
+    return False, f"GitHub 저장 실패 HTTP {r.status_code}: {detail}"
+
+def github_load_result(key):
+    path = f"dashboard_data/{key}.pkl"
+    url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}/contents/{path}"
+    try:
+        r = requests.get(url, headers=_gh_headers(), params={"ref": GH_BRANCH}, timeout=30)
+        if r.status_code != 200:
+            return None, None
+        raw = base64.b64decode(r.json()["content"])
+        obj = pickle.loads(raw)
+        return obj.get("result"), obj.get("updated")
+    except Exception:
+        return None, None
+
+def persist_current_result(key):
+    updated = st.session_state.get(key + "_updated")
+    result = st.session_state.get(key + "_result")
+    if result is None or not updated:
+        return
+    ok, msg = github_save_result(key, result, updated)
+    if ok:
+        st.toast("마지막 결과를 GitHub에 저장했습니다.", icon="💾")
+    else:
+        st.error(msg)
+
+def load_persisted_once():
+    # 각 브라우저 세션 시작 시 GitHub의 마지막 저장 결과를 1회 읽음.
+    # 방문자는 계산하지 않으며 저장 결과만 조회.
+    if st.session_state.get("_persistent_loaded"):
+        return
+    for key in ["liq","fg","canary","trend","rotation","ai","us_sector","kr_sector","kr_fg"]:
+        result, updated = github_load_result(key)
+        if result is not None:
+            st.session_state[key + "_result"] = result
+            st.session_state[key + "_updated"] = updated
+    st.session_state["_persistent_loaded"] = True
+
 
 st.markdown("""
 <style>
@@ -54,8 +200,7 @@ def run_source(source):
 def render_run(result, max_chars=22000):
     ok,ns,txt,shown,figs=result
     for fig in figs:
-        try: st.pyplot(fig, use_container_width=True)
-        except Exception: pass
+        _render_saved_fig(fig)
     for obj in shown[-8:]:
         if isinstance(obj,pd.DataFrame): st.dataframe(obj.tail(80),use_container_width=True)
         elif isinstance(obj,pd.Series): st.dataframe(obj.tail(80).to_frame(),use_container_width=True)
@@ -176,10 +321,15 @@ def check_admin_password():
     return st.session_state.admin_authenticated
 
 IS_ADMIN = check_admin_password()
+with st.sidebar:
+    st.divider()
+    st.caption("💾 결과 저장: GitHub 영구저장")
+    st.caption(f"{GH_OWNER}/{GH_DATA_REPO}")
+
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v9")
+    st.caption("Market Dashboard · LIVE v10")
     st.info("자동 업데이트 OFF")
     st.caption("각 항목의 '최신 데이터 업데이트' 버튼을 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
 
@@ -246,6 +396,8 @@ for _k, _v in _SAFE_STATE_DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
+load_persisted_once()
+
 tabs=st.tabs(["미국 유동성","미국 과열·공포","미국 위험신호","미국 추세전략","미국 주도주","AI·반도체","미국 주도업종","한국 과열·공포","한국 주도업종"])
 
 
@@ -256,6 +408,7 @@ with tabs[0]:
         with st.spinner("유동성 계산 중..."):
             st.session_state.liq_result=run_liquidity()
             st.session_state.liq_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            persist_current_result("liq")
     r=st.session_state.liq_result
     if r is None:
         st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
@@ -271,6 +424,7 @@ with tabs[1]:
         with st.spinner("Fear & Greed 계산 및 그래프 생성 중..."):
             st.session_state.fg_result=run_fg()
             st.session_state.fg_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            persist_current_result("fg")
     r=st.session_state.fg_result
     if r is None:
         st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
@@ -287,6 +441,7 @@ with tabs[2]:
             canary.clear()
             st.session_state.canary_result=canary()
             st.session_state.canary_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            persist_current_result("canary")
     r=st.session_state.canary_result
     if r is None:
         st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
@@ -305,6 +460,7 @@ with tabs[3]:
             trend_backtest.clear()
             st.session_state.trend_result=trend_backtest()
             st.session_state.trend_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            persist_current_result("trend")
     r=st.session_state.trend_result
     if r is None:
         st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
@@ -329,6 +485,7 @@ with tabs[4]:
             time.sleep(2)
             st.session_state.rotation_result=run_rotation()
             st.session_state.rotation_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            persist_current_result("rotation")
     r=st.session_state.rotation_result
     if r is None:
         st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
@@ -359,6 +516,7 @@ with tabs[5]:
             time.sleep(2)
             st.session_state.ai_result=run_ai()
             st.session_state.ai_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            persist_current_result("ai")
     r=st.session_state.ai_result
     if r is None:
         st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
@@ -386,6 +544,7 @@ with tabs[6]:
                 time.sleep(3)
                 st.session_state.us_sector_result=run_us_sector()
                 st.session_state.us_sector_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                persist_current_result("us_sector")
     else:
         st.caption("최신 저장 결과를 조회하는 화면입니다.")
     r=st.session_state.us_sector_result
@@ -436,6 +595,7 @@ with tabs[8]:
                 with st.spinner("한국 시장 주도업종 계산 중..."):
                     st.session_state.kr_sector_result=run_korea_sector(uploaded.getvalue())
                     st.session_state.kr_sector_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    persist_current_result("kr_sector")
     else:
         st.caption("최신 저장 결과를 조회하는 화면입니다.")
     updated_caption("kr_sector")
@@ -488,6 +648,7 @@ with tabs[7]:
                 with st.spinner("한국 Fear & Greed 및 보조지표 계산 중..."):
                     st.session_state["kr_fg_result"] = run_korea_fear_greed(kr_fg_file.getvalue())
                     st.session_state["kr_fg_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    persist_current_result("kr_fg")
     else:
         st.caption("최신 저장 결과를 조회하는 화면입니다.")
 
@@ -521,7 +682,7 @@ with tabs[7]:
             st.divider()
             st.subheader("차트")
             for fig in figs:
-                st.pyplot(fig, use_container_width=True)
+                _render_saved_fig(fig)
 
             if stdout.strip():
                 with st.expander("계산 결과 상세"):
