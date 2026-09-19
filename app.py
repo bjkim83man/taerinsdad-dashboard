@@ -179,7 +179,7 @@ IS_ADMIN = check_admin_password()
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v4")
+    st.caption("Market Dashboard · LIVE v8.1")
     st.info("자동 업데이트 OFF")
     st.caption("각 항목의 '최신 데이터 업데이트' 버튼을 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
 
@@ -399,8 +399,14 @@ with tabs[7]:
     else:
         st.caption("최신 저장 결과를 조회하는 화면입니다.")
     updated_caption("kr_sector")
-    r=st.session_state.kr_sector_result
-    if r is not None:
+    r=st.session_state.get("kr_sector_result")
+    # 배포/코드 변경 뒤 이전 세션에 남은 비호환 결과가 있으면 안전하게 무시
+    if r is not None and (not isinstance(r, (tuple, list)) or len(r) < 3):
+        st.session_state.kr_sector_result = None
+        r = None
+    if r is None:
+        st.info("저장된 결과가 없습니다. 관리자가 최신 엑셀을 업로드한 뒤 계산하세요.")
+    else:
         if r[0]:
             ns=r[1]
             mdf=ns.get("mansfield_df_70")
