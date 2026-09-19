@@ -6,7 +6,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import io, contextlib, traceback
+import io, contextlib, traceback, time
 
 st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
 
@@ -123,68 +123,107 @@ def trend_backtest():
 with st.sidebar:
     st.markdown("## 태린이아빠")
     st.caption("Market Dashboard · LIVE v4")
-    if st.button("🔄 최신 데이터 다시 계산",use_container_width=True):
-        st.cache_data.clear(); st.rerun()
-    st.caption("Colab 없이 Streamlit 서버가 직접 계산합니다.")
+    st.info("자동 업데이트 OFF")
+    st.caption("각 항목의 '최신 데이터 업데이트' 버튼을 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
 
 st.markdown('<div class="hero"><h1>태린이아빠 Market Dashboard</h1><p>각 전략 원본 로직을 웹에서 직접 계산</p></div>',unsafe_allow_html=True)
 
+# 수동 업데이트 전용 상태
+for _k in ["liq","fg","canary","trend","rotation","ai"]:
+    st.session_state.setdefault(_k+"_result", None)
+    st.session_state.setdefault(_k+"_updated", None)
+
+def updated_caption(key):
+    t=st.session_state.get(key+"_updated")
+    st.caption("마지막 업데이트: " + (t if t else "아직 업데이트하지 않음"))
+
 tabs=st.tabs(["유동성","Fear & Greed","카나리아","미국 추세·위기 로테이션","52W + Rotation","AI 하드웨어"])
+
 
 with tabs[0]:
     st.subheader("미국 유동성 환경")
-    with st.spinner("유동성 계산 중..."):
-        r=run_liquidity()
-    if r[0]:
-        st.success("계산 완료")
+    updated_caption("liq")
+    if st.button("🔄 유동성 최신 데이터 업데이트", key="upd_liq"):
+        with st.spinner("유동성 계산 중..."):
+            st.session_state.liq_result=run_liquidity()
+            st.session_state.liq_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r=st.session_state.liq_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
+    elif r[0]:
         render_run(r)
     else:
-        st.error("유동성 계산 오류")
-        st.code(r[2][-12000:],language="text")
+        st.error("유동성 계산 오류"); st.code(r[2][-12000:],language="text")
 
 with tabs[1]:
     st.subheader("미국 Fear & Greed Oscillator")
-    with st.spinner("Fear & Greed 계산 및 그래프 생성 중..."):
-        r=run_fg()
-    if r[0]:
-        st.success("계산 완료")
+    updated_caption("fg")
+    if st.button("🔄 Fear & Greed 최신 데이터 업데이트", key="upd_fg"):
+        with st.spinner("Fear & Greed 계산 및 그래프 생성 중..."):
+            st.session_state.fg_result=run_fg()
+            st.session_state.fg_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r=st.session_state.fg_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
+    elif r[0]:
         render_run(r)
     else:
-        st.error("Fear & Greed 계산 오류")
-        st.code(r[2][-12000:],language="text")
+        st.error("Fear & Greed 계산 오류"); st.code(r[2][-12000:],language="text")
 
 with tabs[2]:
     st.subheader("카나리아 자산 · QQQ & TIP")
-    try:
-        d,v,m=canary()
+    updated_caption("canary")
+    if st.button("🔄 카나리아 최신 데이터 업데이트", key="upd_canary"):
+        with st.spinner("QQQ/TIP 업데이트 중..."):
+            canary.clear()
+            st.session_state.canary_result=canary()
+            st.session_state.canary_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r=st.session_state.canary_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
+    else:
+        d,v,m=r
         a,b,c=st.columns(3)
         with a: card("현재 신호",m,f"기준 {pd.Timestamp(d).date()}")
         with b: card("QQQ 모멘텀",f"{v['QQQ']:+.2%}","1M·3M·6M·12M 평균")
         with c: card("TIP 모멘텀",f"{v['TIP']:+.2%}","둘 다 양수면 공격")
-    except Exception as e: st.exception(e)
 
 with tabs[3]:
     st.subheader("미국 추세시 / 위기시 로테이션")
-    try:
-        d,up,alloc,q,qma,t,tma,cum,qcum,cagr,mdd=trend_backtest()
+    updated_caption("trend")
+    if st.button("🔄 미국 추세 최신 데이터 업데이트", key="upd_trend"):
+        with st.spinner("월봉 데이터와 백테스트 계산 중..."):
+            trend_backtest.clear()
+            st.session_state.trend_result=trend_backtest()
+            st.session_state.trend_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r=st.session_state.trend_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
+    else:
+        d,up,alloc,q,qma,t,tma,cum,qcum,cagr,mdd=r
         a,b,c,dcol=st.columns(4)
         with a: card("현재 추세","상승추세" if up else "하락추세",f"{pd.Timestamp(d).strftime('%Y-%m')} 완성 월봉")
         with b: card("QQQ / 6M MA",f"{q:.2f} / {qma:.2f}")
         with c: card("TIP / 6M MA",f"{t:.2f} / {tma:.2f}")
         with dcol: card("전략 CAGR / MDD",f"{cagr:.1%} / {mdd:.1%}","원본 백테스트 방식")
-        st.markdown("### 다음 달 포트폴리오")
-        st.success(alloc)
-        chart=pd.DataFrame({"Trend Strategy":cum,"QQQ Buy & Hold":qcum}).dropna()
+        st.markdown("### 다음 달 포트폴리오"); st.success(alloc)
         st.markdown("### 백테스트 누적 성과")
-        st.line_chart(chart,use_container_width=True)
-    except Exception as e: st.exception(e)
+        st.line_chart(pd.DataFrame({"Trend Strategy":cum,"QQQ Buy & Hold":qcum}).dropna(),use_container_width=True)
 
 with tabs[4]:
     st.subheader("52주 신고가 + 약세시 Rotation_B")
-    st.caption("평소에는 52W FIXED · 순수 52W의 최근 20D SPY 대비 성과가 기준 이하일 때 WEAK_ROTATION")
-    with st.spinner("52W + Rotation 전체 전략 계산 중... 첫 실행은 시간이 걸릴 수 있습니다."):
-        r=run_rotation()
-    if r[0]:
+    st.caption("평소에는 52W FIXED · 52W의 최근 20D SPY 대비 성과가 기준 이하일 때 WEAK_ROTATION")
+    updated_caption("rotation")
+    st.warning("이 항목은 티커 수가 많아 가장 무겁습니다. 필요할 때만 업데이트하세요.")
+    if st.button("🔄 52W + Rotation 최신 데이터 업데이트", key="upd_rotation"):
+        with st.spinner("52W + Rotation 계산 중..."):
+            time.sleep(2)
+            st.session_state.rotation_result=run_rotation()
+            st.session_state.rotation_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r=st.session_state.rotation_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
+    elif r[0]:
         ns=r[1]; res=ns.get("final_result")
         if isinstance(res,dict):
             d=res.get("Live_Date"); regime=res.get("Live_Regime","-"); excess=res.get("Live_Excess_20D",np.nan)
@@ -196,31 +235,32 @@ with tabs[4]:
             with b: card("52W 20D vs SPY",f"{excess:+.2%}" if pd.notna(excess) else "NaN","약세 전환 판단")
             with c: card("BUY TODAY",", ".join(buys) if buys else "없음")
             with dcol: card("SELL TODAY",", ".join(sells) if sells else "없음")
-            st.markdown("### 현재 포트폴리오")
             if len(w):
                 df=pd.DataFrame({"Ticker":w.index,"Weight":w.values,"진입구분":[origins.get(x,"") for x in w.index]})
                 st.dataframe(df.style.format({"Weight":"{:.2%}"}),use_container_width=True,hide_index=True)
-            else: st.info("현재 보유종목 없음")
         render_run(r)
     else:
-        st.error("52W + Rotation 계산 오류")
-        st.code(r[2][-12000:],language="text")
+        st.error("52W + Rotation 계산 오류"); st.code(r[2][-12000:],language="text")
 
 with tabs[5]:
     st.subheader("AI 하드웨어 모멘텀")
-    with st.spinner("AI 하드웨어 Breadth 계산 및 그래프 생성 중..."):
-        r=run_ai()
-    if r[0]:
-        ns=r[1]; latest=ns.get("latest"); breadth=ns.get("breadth")
+    updated_caption("ai")
+    if st.button("🔄 AI 하드웨어 최신 데이터 업데이트", key="upd_ai"):
+        with st.spinner("AI 하드웨어 Breadth 계산 중..."):
+            time.sleep(2)
+            st.session_state.ai_result=run_ai()
+            st.session_state.ai_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r=st.session_state.ai_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 위 버튼을 눌러 처음 계산하세요.")
+    elif r[0]:
+        ns=r[1]; latest=ns.get("latest")
         if latest is not None:
-            try:
-                a,b,c,d=st.columns(4)
-                with a: card("위험 단계",str(latest["Risk_Level"]))
-                with b: card("Breadth MA5",f"{float(latest['Breadth_Score_MA5']):.1f}")
-                with c: card("5D Slope",f"{float(latest['Slope_5D']):+.1f}")
-                with d: card("60D 상승비율",f"{float(latest['Positive_60D']):.1f}%")
-            except Exception: pass
+            a,b,c,d=st.columns(4)
+            with a: card("위험 단계",str(latest["Risk_Level"]))
+            with b: card("Breadth MA5",f"{float(latest['Breadth_Score_MA5']):.1f}")
+            with c: card("5D Slope",f"{float(latest['Slope_5D']):+.1f}")
+            with d: card("60D 상승비율",f"{float(latest['Positive_60D']):.1f}%")
         render_run(r)
     else:
-        st.error("AI 하드웨어 계산 오류")
-        st.code(r[2][-12000:],language="text")
+        st.error("AI 하드웨어 계산 오류"); st.code(r[2][-12000:],language="text")
