@@ -148,6 +148,35 @@ def run_korea_sector(excel_bytes):
 def run_us_sector():
     return run_source(US_SECTOR_SRC)
 
+def check_admin_password():
+    """관리자 비밀번호는 Streamlit Secrets의 ADMIN_PASSWORD에서 읽습니다."""
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    with st.sidebar:
+        st.markdown("### 🔐 관리자")
+        if st.session_state.admin_authenticated:
+            st.success("관리자 모드")
+            if st.button("관리자 로그아웃", key="admin_logout"):
+                st.session_state.admin_authenticated = False
+                st.rerun()
+        else:
+            pw = st.text_input("관리자 비밀번호", type="password", key="admin_pw")
+            if st.button("관리자 로그인", key="admin_login"):
+                try:
+                    expected = st.secrets["ADMIN_PASSWORD"]
+                except Exception:
+                    st.error("Streamlit Secrets에 ADMIN_PASSWORD를 먼저 등록하세요.")
+                    return False
+                if pw == expected:
+                    st.session_state.admin_authenticated = True
+                    st.rerun()
+                else:
+                    st.error("비밀번호가 맞지 않습니다.")
+    return st.session_state.admin_authenticated
+
+IS_ADMIN = check_admin_password()
+
 with st.sidebar:
     st.markdown("## 태린이아빠")
     st.caption("Market Dashboard · LIVE v4")
@@ -171,7 +200,7 @@ tabs=st.tabs(["유동성","Fear & Greed","카나리아","미국 추세·위기 �
 with tabs[0]:
     st.subheader("미국 유동성 환경")
     updated_caption("liq")
-    if st.button("🔄 유동성 최신 데이터 업데이트", key="upd_liq"):
+    if st.button("🔄 유동성 최신 데이터 업데이트", key="upd_liq", disabled=not IS_ADMIN):
         with st.spinner("유동성 계산 중..."):
             st.session_state.liq_result=run_liquidity()
             st.session_state.liq_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -186,7 +215,7 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("미국 Fear & Greed Oscillator")
     updated_caption("fg")
-    if st.button("🔄 Fear & Greed 최신 데이터 업데이트", key="upd_fg"):
+    if st.button("🔄 Fear & Greed 최신 데이터 업데이트", key="upd_fg", disabled=not IS_ADMIN):
         with st.spinner("Fear & Greed 계산 및 그래프 생성 중..."):
             st.session_state.fg_result=run_fg()
             st.session_state.fg_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -201,7 +230,7 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("카나리아 자산 · QQQ & TIP")
     updated_caption("canary")
-    if st.button("🔄 카나리아 최신 데이터 업데이트", key="upd_canary"):
+    if st.button("🔄 카나리아 최신 데이터 업데이트", key="upd_canary", disabled=not IS_ADMIN):
         with st.spinner("QQQ/TIP 업데이트 중..."):
             canary.clear()
             st.session_state.canary_result=canary()
@@ -219,7 +248,7 @@ with tabs[2]:
 with tabs[3]:
     st.subheader("미국 추세시 / 위기시 로테이션")
     updated_caption("trend")
-    if st.button("🔄 미국 추세 최신 데이터 업데이트", key="upd_trend"):
+    if st.button("🔄 미국 추세 최신 데이터 업데이트", key="upd_trend", disabled=not IS_ADMIN):
         with st.spinner("월봉 데이터와 백테스트 계산 중..."):
             trend_backtest.clear()
             st.session_state.trend_result=trend_backtest()
@@ -243,7 +272,7 @@ with tabs[4]:
     st.caption("평소에는 52W FIXED · 52W의 최근 20D SPY 대비 성과가 기준 이하일 때 WEAK_ROTATION")
     updated_caption("rotation")
     st.warning("이 항목은 티커 수가 많아 가장 무겁습니다. 필요할 때만 업데이트하세요.")
-    if st.button("🔄 52W + Rotation 최신 데이터 업데이트", key="upd_rotation"):
+    if st.button("🔄 52W + Rotation 최신 데이터 업데이트", key="upd_rotation", disabled=not IS_ADMIN):
         with st.spinner("52W + Rotation 계산 중..."):
             time.sleep(2)
             st.session_state.rotation_result=run_rotation()
@@ -273,7 +302,7 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("AI 하드웨어 모멘텀")
     updated_caption("ai")
-    if st.button("🔄 AI 하드웨어 최신 데이터 업데이트", key="upd_ai"):
+    if st.button("🔄 AI 하드웨어 최신 데이터 업데이트", key="upd_ai", disabled=not IS_ADMIN):
         with st.spinner("AI 하드웨어 Breadth 계산 중..."):
             time.sleep(2)
             st.session_state.ai_result=run_ai()
@@ -298,12 +327,15 @@ with tabs[6]:
     st.subheader("미국 주도업종")
     st.caption("Yahoo Finance 기반 · SPY 대비 Mansfield RS, 6개월 상대수익률, 변동성조정 모멘텀, Sortino, 과열 이격도, 4·13·26·52주 정배열")
     updated_caption("us_sector")
-    st.warning("ETF 수가 많아 Yahoo 호출량이 큰 항목입니다. 필요할 때만 업데이트하세요.")
-    if st.button("🔄 미국 주도업종 최신 데이터 업데이트", key="upd_us_sector"):
-        with st.spinner("미국 업종 ETF 3년 데이터를 받아 계산 중입니다..."):
-            time.sleep(3)
-            st.session_state.us_sector_result=run_us_sector()
-            st.session_state.us_sector_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if IS_ADMIN:
+        st.warning("관리자 전용 업데이트입니다. ETF 수가 많아 필요할 때만 실행하세요.")
+        if st.button("🔄 미국 주도업종 최신 데이터 업데이트", key="upd_us_sector"):
+            with st.spinner("미국 업종 ETF 3년 데이터를 받아 계산 중입니다..."):
+                time.sleep(3)
+                st.session_state.us_sector_result=run_us_sector()
+                st.session_state.us_sector_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        st.caption("최신 저장 결과를 조회하는 화면입니다.")
     r=st.session_state.us_sector_result
     if r is None:
         st.info("자동 호출하지 않습니다. 위 버튼을 눌렀을 때만 Yahoo 데이터를 가져옵니다.")
@@ -342,15 +374,18 @@ with tabs[6]:
 with tabs[7]:
     st.subheader("국내시장 주도업종")
     st.caption("엑셀의 '데이터' 시트 · DATE / 코스피 / 업종 ETF 가격열을 사용합니다.")
-    uploaded=st.file_uploader("📂 국내시장 최신 엑셀 업로드", type=["xlsx","xls"], key="kr_sector_excel")
-    if uploaded is None:
-        st.info("엑셀을 선택한 뒤 아래 계산 버튼을 누르세요. 엑셀을 올리기 전에는 아무 계산도 하지 않습니다.")
+    if IS_ADMIN:
+        uploaded=st.file_uploader("📂 국내시장 최신 엑셀 업로드", type=["xlsx","xls"], key="kr_sector_excel")
+        if uploaded is None:
+            st.info("관리자 전용: 엑셀을 선택한 뒤 계산 버튼을 누르세요.")
+        else:
+            st.caption(f"선택 파일: {uploaded.name}")
+            if st.button("▶ 업로드한 엑셀로 국내 주도업종 계산", key="run_kr_sector"):
+                with st.spinner("국내시장 주도업종 계산 중..."):
+                    st.session_state.kr_sector_result=run_korea_sector(uploaded.getvalue())
+                    st.session_state.kr_sector_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     else:
-        st.caption(f"선택 파일: {uploaded.name}")
-        if st.button("▶ 업로드한 엑셀로 국내 주도업종 계산", key="run_kr_sector"):
-            with st.spinner("국내시장 주도업종 계산 중..."):
-                st.session_state.kr_sector_result=run_korea_sector(uploaded.getvalue())
-                st.session_state.kr_sector_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.caption("최신 저장 결과를 조회하는 화면입니다.")
     updated_caption("kr_sector")
     r=st.session_state.kr_sector_result
     if r is not None:
