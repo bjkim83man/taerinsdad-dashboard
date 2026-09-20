@@ -32,10 +32,40 @@ def _gh_headers():
         h["Authorization"] = f"Bearer {GH_TOKEN}"
     return h
 
-def _png_marker(fig):
+def _figure_marker(fig):
+    """
+    영구저장용 경량 차트 포맷.
+    우선 matplotlib Figure의 선 데이터를 숫자로 저장하고,
+    복원이 어려운 복합 차트만 저용량 PNG로 fallback한다.
+    """
+    try:
+        charts = []
+        for ax in fig.axes:
+            ax_data = {
+                "title": ax.get_title(),
+                "xlabel": ax.get_xlabel(),
+                "ylabel": ax.get_ylabel(),
+                "lines": [],
+            }
+            for line in ax.get_lines():
+                x = np.asarray(line.get_xdata())
+                y = np.asarray(line.get_ydata())
+                # datetime 계열도 pickle 가능한 값으로 유지
+                ax_data["lines"].append({
+                    "x": x,
+                    "y": y,
+                    "label": line.get_label(),
+                })
+            charts.append(ax_data)
+        if charts and any(a["lines"] for a in charts):
+            return {"__dashboard_chartdata__": True, "axes": charts}
+    except Exception:
+        pass
+
+    # 복합 차트 fallback: 기존보다 작은 PNG
     try:
         b = io.BytesIO()
-        fig.savefig(b, format="png", dpi=135, bbox_inches="tight")
+        fig.savefig(b, format="png", dpi=90, bbox_inches="tight")
         return {"__dashboard_png__": True, "data": b.getvalue()}
     except Exception:
         return None
@@ -54,7 +84,7 @@ def _storage_safe(obj, depth=0):
         return obj
     # matplotlib figure -> PNG bytes (가볍고 재시작 후에도 안전)
     if hasattr(obj, "savefig") and obj.__class__.__name__ == "Figure":
-        return _png_marker(obj)
+        return _figure_marker(obj)
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
@@ -77,7 +107,31 @@ def _storage_safe(obj, depth=0):
     return None
 
 def _render_saved_fig(fig):
-    if isinstance(fig, dict) and fig.get("__dashboard_png__"):
+    if isinstance(fig, dict) and fig.get("__dashboard_chartdata__"):
+        # 저장된 숫자 데이터로 접속 시 그래프를 다시 그림.
+        for axd in fig.get("axes", []):
+            rf, rax = plt.subplots(figsize=(10, 4.8))
+            for line in axd.get("lines", []):
+                try:
+                    label = line.get("label", "")
+                    if isinstance(label, str) and label.startswith("_"):
+                        label = None
+                    rax.plot(line.get("x"), line.get("y"), label=label)
+                except Exception:
+                    pass
+            if axd.get("title"):
+                rax.set_title(axd["title"])
+            if axd.get("xlabel"):
+                rax.set_xlabel(axd["xlabel"])
+            if axd.get("ylabel"):
+                rax.set_ylabel(axd["ylabel"])
+            labels = [ln.get("label","") for ln in axd.get("lines", [])]
+            if any(isinstance(x, str) and x and not x.startswith("_") for x in labels):
+                rax.legend()
+            rax.grid(alpha=0.2)
+            st.pyplot(rf, use_container_width=True)
+            plt.close(rf)
+    elif isinstance(fig, dict) and fig.get("__dashboard_png__"):
         st.image(fig["data"], use_container_width=True)
     else:
         try:
@@ -112,7 +166,7 @@ def github_save_result(key, result, updated):
 
     r = requests.put(url, headers=_gh_headers(), json=body, timeout=90)
     if r.status_code in (200, 201):
-        return True, f"GitHub 저장 완료 ({len(raw)/1024/1024:.1f} MB)"
+        return True, f"GitHub 저장 완료 · 경량 저장 {len(raw)/1024/1024:.2f} MB"
     try:
         detail = r.json().get("message", r.text)
     except Exception:
@@ -120,13 +174,18 @@ def github_save_result(key, result, updated):
     return False, f"GitHub 저장 실패 HTTP {r.status_code}: {detail}"
 
 def github_load_result(key):
+    """GitHub의 마지막 결과를 읽는다.
+    1MB를 넘는 파일도 읽을 수 있도록 raw media type을 사용한다.
+    """
     path = f"dashboard_data/{key}.pkl"
     url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}/contents/{path}"
     try:
-        r = requests.get(url, headers=_gh_headers(), params={"ref": GH_BRANCH}, timeout=30)
+        headers = _gh_headers().copy()
+        headers["Accept"] = "application/vnd.github.raw+json"
+        r = requests.get(url, headers=headers, params={"ref": GH_BRANCH}, timeout=60)
         if r.status_code != 200:
             return None, None
-        raw = base64.b64decode(r.json()["content"])
+        raw = r.content
         obj = pickle.loads(raw)
         return obj.get("result"), obj.get("updated")
     except Exception:
@@ -329,7 +388,7 @@ with st.sidebar:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v10")
+    st.caption("Market Dashboard · LIVE v10.2")
     st.info("자동 업데이트 OFF")
     st.caption("각 항목의 '최신 데이터 업데이트' 버튼을 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
 
