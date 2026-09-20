@@ -289,14 +289,124 @@ def load_persisted_once():
 
 st.markdown("""
 <style>
+:root{
+  --td-bg:#07111f;
+  --td-panel:#101a31;
+  --td-panel-2:#0f1728;
+  --td-card:#121c32;
+  --td-border:#2a3958;
+  --td-text:#f5f7fb;
+  --td-muted:#b9c5d8;
+  --td-sub:#8e9db4;
+  --td-link:#7db8ff;
+}
+html, body, [class*="css"]{
+  color:var(--td-text) !important;
+}
+body{
+  background:var(--td-bg) !important;
+}
+.stApp, [data-testid="stAppViewContainer"], .main, [data-testid="stHeader"]{
+  background:var(--td-bg) !important;
+  color:var(--td-text) !important;
+}
+[data-testid="stSidebar"]{
+  background:var(--td-panel-2) !important;
+  color:var(--td-text) !important;
+}
+[data-testid="stSidebar"] *{
+  color:var(--td-text) !important;
+}
 .block-container{padding-top:1.15rem;max-width:1500px}
-.hero{background:#101a31;border-radius:18px;padding:22px;margin-bottom:14px}
-.hero h1{color:white;margin:0} .hero p{color:#b9c5d8;margin:6px 0 0}
-.card{background:#121c32;border:1px solid #2a3958;border-radius:14px;padding:15px;min-height:108px}
-.label{color:#aab8cd;font-size:.85rem} .value{color:white;font-size:1.55rem;font-weight:800;margin-top:5px}
-.sub{color:#8e9db4;font-size:.76rem;margin-top:5px}
-[data-testid="stSidebar"]{background:#0f1728}
+.hero{background:var(--td-panel);border-radius:18px;padding:22px;margin-bottom:14px}
+.hero h1{color:var(--td-text);margin:0}
+.hero p{color:var(--td-muted);margin:6px 0 0}
+.card{background:var(--td-card);border:1px solid var(--td-border);border-radius:14px;padding:15px;min-height:108px}
+.label{color:#aab8cd;font-size:.85rem}
+.value{color:var(--td-text);font-size:1.55rem;font-weight:800;margin-top:5px}
+.sub{color:var(--td-sub);font-size:.76rem;margin-top:5px}
 [data-testid="stSidebar"] .stButton>button{justify-content:flex-start;text-align:left;border-radius:9px}
+
+h1,h2,h3,h4,h5,h6,p,span,label,div,li,small,strong{
+  color:var(--td-text);
+}
+section[data-testid="stSidebar"] h1,
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] div,
+section[data-testid="stSidebar"] label{
+  color:var(--td-text) !important;
+}
+
+a{color:var(--td-link) !important;}
+hr{border-color:var(--td-border) !important;}
+
+.stButton>button,
+button[kind="secondary"],
+button[kind="primary"]{
+  background:#182645 !important;
+  color:var(--td-text) !important;
+  border:1px solid var(--td-border) !important;
+}
+.stButton>button:hover{
+  background:#21325b !important;
+  color:var(--td-text) !important;
+  border:1px solid #355184 !important;
+}
+
+.stTextInput input,
+.stTextArea textarea,
+div[data-baseweb="select"] > div,
+div[data-baseweb="base-input"] > div{
+  background:#0c1527 !important;
+  color:var(--td-text) !important;
+  border-color:var(--td-border) !important;
+}
+.stTextInput input::placeholder,
+.stTextArea textarea::placeholder{color:var(--td-sub) !important;}
+
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"],
+[data-testid="stMetricDelta"]{
+  color:var(--td-text) !important;
+}
+
+div[data-testid="stMarkdownContainer"] p,
+div[data-testid="stMarkdownContainer"] li,
+div[data-testid="stMarkdownContainer"] span{
+  color:var(--td-text);
+}
+
+div.stAlert{
+  background:#13233e !important;
+  color:var(--td-text) !important;
+  border:1px solid var(--td-border) !important;
+}
+
+div.stAlert *{color:var(--td-text) !important;}
+
+pre, code{
+  color:#e8edf7 !important;
+}
+
+[data-testid="stDataFrame"],
+[data-testid="stTable"]{
+  color:var(--td-text) !important;
+}
+
+[data-testid="stExpander"] details{
+  background:#0d1628 !important;
+  border:1px solid var(--td-border) !important;
+  border-radius:10px !important;
+}
+
+[data-testid="stFileUploader"] section{
+  background:#0d1628 !important;
+  border:1px solid var(--td-border) !important;
+  color:var(--td-text) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1087,7 +1197,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.10")
+    st.caption("Market Dashboard · LIVE v11.11")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
