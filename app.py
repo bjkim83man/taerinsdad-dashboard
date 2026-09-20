@@ -1222,7 +1222,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.13")
+    st.caption("Market Dashboard · LIVE v11.14")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
@@ -2134,14 +2134,17 @@ def render_korea_fear_greed_result(r):
         st.divider()
         st.subheader("차트")
         for fig in figs:
-            # 과거 저장본에 Elder Impulse가 남아 있어도 화면에서는 제외
+            # 과거 저장본에 Elder Impulse / 개인 순매수 Capitulation 산점도가 남아 있어도 화면에서는 제외
             if isinstance(fig, dict) and fig.get("__dashboard_chartdata__"):
                 _titles = [
                     str(_ax.get("title", ""))
                     for _ax in fig.get("axes", [])
                     if isinstance(_ax, dict)
                 ]
-                if any("elder impulse" in _t.lower() for _t in _titles):
+                _titles_l = [t.lower() for t in _titles]
+                if any("elder impulse" in _t for _t in _titles_l):
+                    continue
+                if any(("individual net buying" in _t) or ("capitulation" in _t) for _t in _titles_l):
                     continue
             _render_saved_fig(fig)
 
