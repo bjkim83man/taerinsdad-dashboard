@@ -708,70 +708,24 @@ def _parse_us_alignment_items(section_text):
 
 
 def _render_us_alignment_text(txt):
-    """마지막 정배열 장문 print를 읽기 쉬운 두 표 + 요약으로 변환."""
+    """미국 ETF 정배열 출력에서는 개별 목록을 숨기고 마지막 요약만 표시."""
     if "🔥 완전 정배열 ETF" not in txt or "📈 이평 정배열 ETF" not in txt:
         return False
 
-    import html as _html
-    head, tail = txt.split("🔥 완전 정배열 ETF", 1)
-    if head.strip():
-        st.markdown(f'<pre class="colab-output">{_html.escape(head)}</pre>', unsafe_allow_html=True)
-
-    if "📈 이평 정배열 ETF" not in tail:
-        return False
-    full_part, rest = tail.split("📈 이평 정배열 ETF", 1)
-
+    # 정배열 개별 종목 목록은 표시하지 않고 요약 숫자만 추출한다.
     summary_part = ""
-    if "📊 미국 ETF 정배열 현황" in rest:
-        ma_part, summary_part = rest.split("📊 미국 ETF 정배열 현황", 1)
-    else:
-        ma_part = rest
+    if "📊 미국 ETF 정배열 현황" in txt:
+        summary_part = txt.split("📊 미국 ETF 정배열 현황", 1)[1]
 
-    # heading 조건 문구는 괄호 부분만 따로 보여준다.
-    full_condition = ""
-    m = re.match(r"\\s*\\((.*?)\\)", full_part, re.S)
-    if m:
-        full_condition = m.group(1).strip()
-        full_part = full_part[m.end():]
+    full_n = re.search(r"완전 정배열\s*:\s*(\d+)개", summary_part)
+    ma_n = re.search(r"이평 정배열\s*:\s*(\d+)개", summary_part)
+    total_n = re.search(r"분석 가능 전체(?:\s*ETF)?\s*:\s*(\d+)개", summary_part)
 
-    ma_condition = ""
-    m = re.match(r"\\s*\\((.*?)\\)", ma_part, re.S)
-    if m:
-        ma_condition = m.group(1).strip()
-        ma_part = ma_part[m.end():]
-
-    st.markdown("### 🔥 완전 정배열 ETF")
-    if full_condition:
-        st.caption(full_condition)
-    full_df = _parse_us_alignment_items(full_part)
-    if not full_df.empty:
-        _render_static_df(full_df)
-    else:
-        st.caption("해당 ETF 없음")
-
-    st.markdown("### 📈 이평 정배열 ETF")
-    if ma_condition:
-        st.caption(ma_condition)
-    ma_df = _parse_us_alignment_items(ma_part)
-    if not ma_df.empty:
-        _render_static_df(ma_df)
-    else:
-        st.caption("해당 ETF 없음")
-
-    # 마지막 요약은 3개 숫자로만
-    full_n = re.search(r"완전 정배열\\s*:\\s*(\\d+)개", summary_part)
-    ma_n = re.search(r"이평 정배열\\s*:\\s*(\\d+)개", summary_part)
-    total_n = re.search(r"분석 가능 전체(?:\\s*ETF)?\\s*:\\s*(\\d+)개", summary_part)
-    if full_n or ma_n or total_n:
-        st.markdown("### 📊 미국 ETF 정배열 현황")
-        a, b, c = st.columns(3)
-        a.metric("완전 정배열", f"{full_n.group(1)}개" if full_n else "-")
-        b.metric("이평 정배열", f"{ma_n.group(1)}개" if ma_n else "-")
-        c.metric("분석 가능 전체", f"{total_n.group(1)}개" if total_n else "-")
-    elif summary_part.strip():
-        st.markdown("### 📊 미국 ETF 정배열 현황")
-        st.caption(re.sub(r"\\s+", " ", summary_part).strip())
-
+    st.markdown("### 📊 미국 ETF 정배열 현황")
+    a, b, c = st.columns(3)
+    a.metric("완전 정배열", f"{full_n.group(1)}개" if full_n else "-")
+    b.metric("이평 정배열", f"{ma_n.group(1)}개" if ma_n else "-")
+    c.metric("분석 가능 전체", f"{total_n.group(1)}개" if total_n else "-")
     return True
 
 
@@ -1133,7 +1087,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.9")
+    st.caption("Market Dashboard · LIVE v11.10")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
