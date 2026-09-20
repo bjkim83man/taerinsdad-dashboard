@@ -321,6 +321,23 @@ body{
 .hero{background:var(--td-panel);border-radius:18px;padding:22px;margin-bottom:14px}
 .hero h1{color:var(--td-text);margin:0}
 .hero p{color:var(--td-muted);margin:6px 0 0}
+.youtube-cta{
+  display:inline-block;
+  margin-top:14px;
+  padding:10px 16px;
+  border-radius:10px;
+  background:#ff0033 !important;
+  color:#ffffff !important;
+  font-weight:800;
+  text-decoration:none !important;
+  border:1px solid #ff3157;
+  box-shadow:0 4px 14px rgba(255,0,51,.22);
+}
+.youtube-cta:hover{
+  background:#e6002e !important;
+  color:#ffffff !important;
+  text-decoration:none !important;
+}
 .card{background:var(--td-card);border:1px solid var(--td-border);border-radius:14px;padding:15px;min-height:108px}
 .label{color:#aab8cd;font-size:.85rem}
 .value{color:var(--td-text);font-size:1.55rem;font-weight:800;margin-top:5px}
@@ -1222,7 +1239,14 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.15")
+    st.caption("Market Dashboard · LIVE v11.16")
+    st.link_button(
+        "▶ 태린이아빠 주식투자 YouTube",
+        "https://www.youtube.com/@Taerins_Dad",
+        use_container_width=True,
+        type="primary",
+    )
+    st.caption("영상 해설·시장 브리핑은 유튜브에서 함께 보실 수 있습니다.")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
@@ -1248,7 +1272,15 @@ with st.sidebar:
     st.caption("관리자가 업데이트를 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
 
 st.markdown(
-    f'<div class="hero"><h1>{ACTIVE_PAGE}</h1><p>태린이아빠 Market Dashboard · 저장된 마지막 결과를 표시합니다.</p></div>',
+    f"""
+    <div class="hero">
+      <h1>{ACTIVE_PAGE}</h1>
+      <p>태린이아빠 Market Dashboard · 저장된 마지막 결과를 표시합니다.</p>
+      <a class="youtube-cta" href="https://www.youtube.com/@Taerins_Dad" target="_blank" rel="noopener noreferrer">
+        ▶ 태린이아빠 주식투자 YouTube 바로가기
+      </a>
+    </div>
+    """,
     unsafe_allow_html=True
 )
 
