@@ -1222,7 +1222,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.14")
+    st.caption("Market Dashboard · LIVE v11.15")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
@@ -2032,6 +2032,17 @@ def run_korea_fear_greed(excel_bytes):
 
             marker = _figure_marker(fig)
             if marker is not None:
+                # 한국 Fear & Greed의 산점도처럼 현재 경량 포맷이 선/막대로 복원하지 못하는
+                # 그래프는 빈 흰 캔버스로 남을 수 있으므로 저장 자체를 생략한다.
+                if isinstance(marker, dict) and marker.get("__dashboard_chartdata__"):
+                    _axes = marker.get("axes", [])
+                    _has_drawable = any(
+                        bool(_ax.get("lines")) or bool(_ax.get("bars"))
+                        for _ax in _axes if isinstance(_ax, dict)
+                    )
+                    if not _has_drawable:
+                        plt.close(fig)
+                        return
                 figs.append(marker)
             plt.close(fig)
         except Exception:
@@ -2145,6 +2156,14 @@ def render_korea_fear_greed_result(r):
                 if any("elder impulse" in _t for _t in _titles_l):
                     continue
                 if any(("individual net buying" in _t) or ("capitulation" in _t) for _t in _titles_l):
+                    continue
+                # v11.14 이전 저장본에 남아 있는 '내용 없는 흰 그래프'도 표시하지 않음
+                _axes = fig.get("axes", [])
+                _has_drawable = any(
+                    bool(_ax.get("lines")) or bool(_ax.get("bars"))
+                    for _ax in _axes if isinstance(_ax, dict)
+                )
+                if not _has_drawable:
                     continue
             _render_saved_fig(fig)
 
