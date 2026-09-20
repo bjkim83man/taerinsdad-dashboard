@@ -721,11 +721,233 @@ def render_colab_result(result):
 def run_ai():
     return run_colab_source(AI_SRC)
 
+
 def run_rotation():
-    return run_colab_source(ROT_SRC)
+    """
+    52주 전략은 화면에 필요한 핵심 결과만 저장한다.
+    - 현재 52W 전략 작동 여부
+    - 현재 포트폴리오 / 오늘 BUY·SELL
+    - 백테스트 성과표
+    - 백테스트 equity curve
+    과거 거래내역/최근 30일 포지션/중간 출력은 저장하지 않는다.
+    """
+    diagnostics = io.StringIO()
+    raw_stdout = io.StringIO()
+
+    def _quiet_print(*args, **kwargs):
+        return None
+
+    def _quiet_display(*args, **kwargs):
+        return None
+
+    old_show = plt.show
+
+    def _quiet_show(*args, **kwargs):
+        try:
+            plt.close(plt.gcf())
+        except Exception:
+            pass
+
+    plt.show = _quiet_show
+    ns = {"display": _quiet_display, "print": _quiet_print}
+
+    try:
+        with contextlib.redirect_stdout(raw_stdout), contextlib.redirect_stderr(diagnostics):
+            exec(ROT_SRC, ns, ns)
+
+        final_result = ns.get("final_result", {})
+        summary = ns.get("summary")
+        baseline_live = ns.get("baseline_live")
+        final_live = ns.get("final_live")
+        spy_live = ns.get("spy_live")
+        industry_etfs = ns.get("industry_etfs", {})
+        eps = float(ns.get("EPS", 1e-12))
+
+        live_excess = final_result.get("Live_Excess_20D", np.nan)
+        regime = final_result.get("Live_Regime", "")
+        # 원본 전략의 weak-regime 판정 자체가
+        # 순수 52W 최근 20D SPY 초과수익 <= -1% 인지 여부다.
+        if pd.notna(live_excess):
+            working = bool(float(live_excess) > -0.01)
+            status = "통함" if working else "안통함"
+        else:
+            working = None
+            status = "판정 대기"
+
+        weights = final_result.get("Final_Weights")
+        origins = final_result.get("Origins", {})
+        current_rows = []
+        if isinstance(weights, pd.Series):
+            held = weights[weights > eps].sort_values(ascending=False)
+            for ticker, weight in held.items():
+                current_rows.append({
+                    "Ticker": ticker,
+                    "Industry": industry_etfs.get(ticker, ""),
+                    "Origin": origins.get(ticker, ""),
+                    "Weight": float(weight),
+                })
+        current_df = pd.DataFrame(current_rows)
+
+        sells = list(final_result.get("Live_SELL") or [])
+        buys = list(final_result.get("Live_BUY") or [])
+
+        action_rows = []
+        for ticker in sells:
+            action_rows.append({
+                "처리": "SELL",
+                "Ticker": ticker,
+                "Industry": industry_etfs.get(ticker, ""),
+            })
+        for ticker in buys:
+            action_rows.append({
+                "처리": "BUY",
+                "Ticker": ticker,
+                "Industry": industry_etfs.get(ticker, ""),
+            })
+        action_df = pd.DataFrame(action_rows)
+
+        curves = pd.DataFrame()
+        curve_parts = []
+        for name, obj in [
+            ("52W FIXED", baseline_live),
+            ("52W + Rotation_B", final_live),
+            ("SPY", spy_live),
+        ]:
+            if isinstance(obj, pd.Series):
+                x = obj.rename(name)
+                curve_parts.append(x)
+        if curve_parts:
+            curves = pd.concat(curve_parts, axis=1).dropna(how="all")
+
+        # 저장용 성과표는 숫자 그대로 보존
+        perf = summary.copy() if isinstance(summary, pd.DataFrame) else pd.DataFrame()
+
+        invested = float(current_df["Weight"].sum()) if not current_df.empty else 0.0
+
+        payload = {
+            "simple_rotation": True,
+            "status": status,
+            "working": working,
+            "live_date": final_result.get("Live_Date"),
+            "live_excess_20d": live_excess,
+            "regime": regime,
+            "new_buy_mode": final_result.get("Live_Origin", ""),
+            "portfolio": current_df,
+            "actions": action_df,
+            "invested": invested,
+            "cash": max(0.0, 1.0 - invested),
+            "performance": perf,
+            "equity_curve": curves,
+        }
+        return True, payload, diagnostics.getvalue()[-12000:], [], []
+
+    except Exception:
+        tb = traceback.format_exc()
+        diagnostics.write("\n" + tb)
+        return False, {"simple_rotation": True}, diagnostics.getvalue()[-20000:], [], []
+
+    finally:
+        plt.show = old_show
+        plt.close("all")
+
 
 def run_us_sector():
     return run_colab_source(US_SECTOR_SRC)
+
+
+def render_rotation_simple(result):
+    """미국 52주 신고가 전략의 핵심 상태/포트/성과만 심플하게 표시."""
+    if result is None:
+        return
+
+    try:
+        ok, payload, err, _, _ = result
+    except Exception:
+        st.error("저장 결과 형식을 읽을 수 없습니다.")
+        return
+
+    if not ok:
+        st.error("미국 52주 신고가 전략 계산 오류")
+        if err:
+            st.code(err[-12000:], language="text")
+        return
+
+    if not isinstance(payload, dict) or not payload.get("simple_rotation"):
+        st.info("이 결과는 이전 저장 형식입니다. 관리자가 이 항목을 한 번 업데이트하면 간단한 새 화면으로 바뀝니다.")
+        return
+
+    status = payload.get("status", "판정 대기")
+    excess = payload.get("live_excess_20d", np.nan)
+    regime = payload.get("regime", "")
+
+    if status == "통함":
+        st.success("✅ 현재 52주 신고가 전략: 통함")
+    elif status == "안통함":
+        st.warning("⚠️ 현재 52주 신고가 전략: 안통함")
+    else:
+        st.info("현재 52주 신고가 전략: 판정 대기")
+
+    if pd.notna(excess):
+        st.caption(
+            f"최근 20거래일 순수 52W 전략의 SPY 대비 초과수익 {float(excess):+.2%} "
+            f"· 판정 기준 -1% · 현재 Regime {regime}"
+        )
+    elif regime:
+        st.caption(f"현재 Regime {regime}")
+
+    st.markdown("### 현재 포트폴리오")
+    portfolio = payload.get("portfolio")
+    if isinstance(portfolio, pd.DataFrame) and not portfolio.empty:
+        pf = portfolio.copy()
+        if "Weight" in pf.columns:
+            pf["Weight"] = pf["Weight"].map(lambda x: f"{float(x):.2%}")
+        _render_static_df(pf)
+        st.caption(
+            f"투자비중 {float(payload.get('invested', 0)):.2%} · "
+            f"현금비중 {float(payload.get('cash', 0)):.2%}"
+        )
+    else:
+        st.caption("현재 보유종목 없음 · 현금 100%")
+
+    st.markdown("### 오늘 매매 처리")
+    actions = payload.get("actions")
+    if isinstance(actions, pd.DataFrame) and not actions.empty:
+        _render_static_df(actions)
+    else:
+        st.caption("오늘 BUY / SELL 없음")
+
+    st.markdown("### 백테스트 성과")
+    perf = payload.get("performance")
+    if isinstance(perf, pd.DataFrame) and not perf.empty:
+        show = perf.copy()
+        for col in ["CAGR", "MDD"]:
+            if col in show.columns:
+                show[col] = show[col].map(lambda x: f"{float(x):.2%}" if pd.notna(x) else "-")
+        for col in ["Sharpe", "Sortino", "Calmar"]:
+            if col in show.columns:
+                show[col] = show[col].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "-")
+        if "Annual_Turnover" in show.columns:
+            show["Annual_Turnover"] = show["Annual_Turnover"].map(
+                lambda x: f"{float(x):.2f}x" if pd.notna(x) else "-"
+            )
+        if "Ending_Multiple" in show.columns:
+            show["Ending_Multiple"] = show["Ending_Multiple"].map(
+                lambda x: f"{float(x):.2f}x" if pd.notna(x) else "-"
+            )
+        _render_static_df(show)
+
+    st.markdown("### 백테스트 결과 그래프")
+    curves = payload.get("equity_curve")
+    if isinstance(curves, pd.DataFrame) and not curves.empty:
+        fig, ax = plt.subplots(figsize=(14, 6))
+        for col in curves.columns:
+            ax.plot(curves.index, curves[col], label=str(col), linewidth=1.8)
+        ax.set_title("52W Strategy Backtest")
+        ax.set_ylabel("Growth of $1")
+        ax.grid(alpha=0.25)
+        ax.legend()
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
 
 
 def check_admin_password():
@@ -781,7 +1003,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.7")
+    st.caption("Market Dashboard · LIVE v11.8")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
@@ -1660,25 +1882,26 @@ if ACTIVE_PAGE == "미국 위험신호":
 
 if ACTIVE_PAGE == "미국 52주 신고가 전략 점검":
     st.subheader("미국 52주 신고가 전략 점검")
-    st.caption("원본 Google Colab의 print → 표 → 그래프 출력 순서를 그대로 표시합니다. 별도의 카드·엑셀형 표로 재가공하지 않습니다.")
+    st.caption("현재 전략 작동 여부 · 현재 포트폴리오 · 오늘 BUY/SELL · 백테스트 성과만 간단히 확인합니다.")
     updated_caption("rotation")
-    st.warning("이 항목은 티커 수가 많아 가장 무겁습니다. 필요할 때만 업데이트하세요.")
-    if st.button("🔄 미국 52주 신고가 전략 최신 데이터 업데이트", key="upd_rotation", disabled=not IS_ADMIN):
-        with st.spinner("미국 52주 신고가 전략 계산 중..."):
-            time.sleep(2)
-            st.session_state.rotation_result=run_rotation()
-            if st.session_state.rotation_result[0]:
-                st.session_state.rotation_updated=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                persist_current_result("rotation")
-                st.success("업데이트 완료. Colab 출력 순서와 그래프 좌표를 압축 저장했습니다.")
-    r=st.session_state.rotation_result
-    if r is None:
-        st.info("저장된 결과가 없습니다. 관리자가 위 버튼을 눌러 처음 계산하면 이후 저장 결과를 그대로 표시합니다.")
-    elif r[0]:
-        render_colab_result(r)
+    if IS_ADMIN:
+        st.warning("티커 수가 많아 업데이트 계산은 무겁습니다. 방문자는 저장된 결과만 조회합니다.")
+        if st.button("🔄 미국 52주 신고가 전략 최신 데이터 업데이트", key="upd_rotation"):
+            with st.spinner("미국 52주 신고가 전략 계산 중..."):
+                time.sleep(2)
+                st.session_state.rotation_result = run_rotation()
+                if st.session_state.rotation_result[0]:
+                    st.session_state.rotation_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    persist_current_result("rotation")
+                    st.success("업데이트 완료. 핵심 상태·포트폴리오·성과만 압축 저장했습니다.")
     else:
-        st.error("미국 52주 신고가 전략 계산 오류")
-        render_colab_result(r)
+        st.caption("최신 저장 결과를 조회하는 화면입니다. 방문자 접속으로 Yahoo 데이터를 다시 받지 않습니다.")
+
+    r = st.session_state.rotation_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 관리자가 한 번 업데이트하면 이후 같은 결과가 유지됩니다.")
+    else:
+        render_rotation_simple(r)
 
 if ACTIVE_PAGE == "AI하드웨어 주가 모멘텀 점검":
     st.subheader("AI하드웨어 주가 모멘텀 점검")
@@ -1729,7 +1952,7 @@ if ACTIVE_PAGE == "대만 월별 매출":
 
 if ACTIVE_PAGE == "미국 ETF 소라티노 및 상대강도":
     st.subheader("미국 ETF 소라티노 및 상대강도")
-    st.caption("원본 Google Colab의 print → 표 → 그래프 출력 순서를 그대로 표시합니다. 별도의 요약 카드·엑셀형 표를 앞에 붙이지 않습니다.")
+    st.caption("한국 ETF 화면과 같은 방식으로 원본 Google Colab의 print → 표 → 그래프 출력 순서를 그대로 표시합니다.")
     updated_caption("us_sector")
     if IS_ADMIN:
         st.warning("관리자 전용 업데이트입니다. ETF 수가 많아 필요할 때만 실행하세요.")
@@ -1747,10 +1970,12 @@ if ACTIVE_PAGE == "미국 ETF 소라티노 및 상대강도":
     if r is None:
         st.info("저장된 결과가 없습니다. 관리자가 한 번 업데이트하면 이후 저장된 Colab형 결과를 표시합니다.")
     elif r[0]:
-        render_colab_result(r)
+        # 한국 ETF 화면과 동일한 notebook/Colab형 렌더러 사용
+        render_korea_sector_compact(r[1])
     else:
         st.error("미국 ETF 소라티노·상대강도 계산 오류")
-        render_colab_result(r)
+        if isinstance(r, tuple) and len(r) > 2 and r[2]:
+            st.code(str(r[2])[-12000:], language="text")
 
 if ACTIVE_PAGE == "한국 ETF 소라티노 및 상대강도":
     st.subheader("한국 ETF 소라티노 및 상대강도")
