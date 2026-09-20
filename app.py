@@ -727,6 +727,34 @@ def run_rotation():
 def run_us_sector():
     return run_colab_source(US_SECTOR_SRC)
 
+
+def check_admin_password():
+    """관리자 비밀번호는 Streamlit Secrets의 ADMIN_PASSWORD에서 읽습니다."""
+    if "admin_authenticated" not in st.session_state:
+        st.session_state.admin_authenticated = False
+
+    with st.sidebar:
+        st.markdown("### 🔐 관리자")
+        if st.session_state.admin_authenticated:
+            st.success("관리자 모드")
+            if st.button("관리자 로그아웃", key="admin_logout"):
+                st.session_state.admin_authenticated = False
+                st.rerun()
+        else:
+            pw = st.text_input("관리자 비밀번호", type="password", key="admin_pw")
+            if st.button("관리자 로그인", key="admin_login"):
+                try:
+                    expected = st.secrets["ADMIN_PASSWORD"]
+                except Exception:
+                    st.error("Streamlit Secrets에 ADMIN_PASSWORD를 먼저 등록하세요.")
+                    return False
+                if pw == expected:
+                    st.session_state.admin_authenticated = True
+                    st.rerun()
+                else:
+                    st.error("비밀번호가 맞지 않습니다.")
+    return st.session_state.admin_authenticated
+
 # ============================================================
 # v11: 왼쪽 그룹형 네비게이션
 # ============================================================
@@ -753,7 +781,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.5")
+    st.caption("Market Dashboard · LIVE v11.6")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
