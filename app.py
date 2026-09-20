@@ -781,7 +781,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.6")
+    st.caption("Market Dashboard · LIVE v11.7")
     st.markdown("---")
     for _group, _pages in NAV_GROUPS.items():
         st.markdown(f"**{_group}**")
@@ -854,7 +854,7 @@ _guide = PAGE_GUIDES.get(ACTIVE_PAGE)
 if _guide:
     st.info(
         _guide["why"] +
-        "\\n\\n" + _guide["check"]
+        "\n\n" + _guide["check"]
     )
     st.caption("※ 하나의 지표만으로 매수·매도를 결정하기보다, 서로 다른 데이터가 같은 방향을 가리키는지 확인하는 점검용 화면입니다.")
 
