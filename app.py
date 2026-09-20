@@ -32,6 +32,57 @@ def _gh_headers():
         h["Authorization"] = f"Bearer {GH_TOKEN}"
     return h
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def github_storage_stats():
+    """
+    GitHub API에서 데이터 저장소 전체 크기와 dashboard_data 현재 파일 합계를 조회.
+    - repo size: GitHub가 보고하는 저장소 전체 크기(KB, 커밋 이력 포함)
+    - current data: dashboard_data 폴더의 현재 파일 size 합계
+    """
+    if not GH_OWNER or not GH_DATA_REPO:
+        return {"ok": False, "error": "GitHub 저장소 설정이 없습니다."}
+
+    try:
+        repo_url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}"
+        r = requests.get(repo_url, headers=_gh_headers(), timeout=20)
+        r.raise_for_status()
+        repo_info = r.json()
+        repo_size_kb = float(repo_info.get("size", 0) or 0)
+
+        folder_url = (
+            f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}"
+            f"/contents/dashboard_data"
+        )
+        fr = requests.get(
+            folder_url,
+            headers=_gh_headers(),
+            params={"ref": GH_BRANCH},
+            timeout=20,
+        )
+
+        data_bytes = 0
+        file_count = 0
+        if fr.status_code == 200:
+            items = fr.json()
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict) and item.get("type") == "file":
+                        data_bytes += int(item.get("size", 0) or 0)
+                        file_count += 1
+        elif fr.status_code != 404:
+            fr.raise_for_status()
+
+        return {
+            "ok": True,
+            "repo_mb": repo_size_kb / 1024.0,
+            "current_data_mb": data_bytes / (1024.0 * 1024.0),
+            "file_count": file_count,
+            "repo": f"{GH_OWNER}/{GH_DATA_REPO}",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def _figure_marker(fig):
     """Matplotlib figure를 이미지 대신 숫자 좌표 중심으로 저장한다."""
     try:
@@ -1239,7 +1290,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.16")
+    st.caption("Market Dashboard · LIVE v11.17")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -1270,6 +1321,27 @@ with st.sidebar:
     st.caption(f"{GH_OWNER}/{GH_DATA_REPO}")
     st.info("자동 업데이트 OFF")
     st.caption("관리자가 업데이트를 눌렀을 때만 외부 데이터를 다시 가져옵니다.")
+
+    if IS_ADMIN:
+        st.markdown("#### 💾 저장용량 현황")
+
+        if st.button("저장용량 확인 / 새로고침", key="refresh_storage_stats", use_container_width=True):
+            github_storage_stats.clear()
+            st.session_state["show_storage_stats"] = True
+
+        if st.session_state.get("show_storage_stats", False):
+            _storage = github_storage_stats()
+            if _storage.get("ok"):
+                c1, c2 = st.columns(2)
+                c1.metric("저장소 전체", f"{_storage['repo_mb']:.2f} MB")
+                c2.metric("현재 결과파일", f"{_storage['current_data_mb']:.2f} MB")
+                st.caption(
+                    f"dashboard_data 파일 {_storage['file_count']}개 · "
+                    "저장소 전체는 GitHub API 보고치(커밋 이력 포함)입니다."
+                )
+                st.caption("※ 브라우저 캐시나 Streamlit 실행 메모리는 이 용량에 포함되지 않습니다.")
+            else:
+                st.warning(f"저장용량 조회 실패: {_storage.get('error', '알 수 없는 오류')}")
 
 st.markdown(
     f"""
