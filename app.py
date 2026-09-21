@@ -221,10 +221,14 @@ def _render_saved_fig(fig):
             bars = axd.get("bars", [])
             if bars:
                 try:
-                    xs=[b["x"] for b in bars]; hs=[b["height"] for b in bars]
-                    ws=[b["width"] for b in bars]; bs=[b["bottom"] for b in bars]
-                    fc=bars[0].get("facecolor"); alpha=bars[0].get("alpha")
-                    rax.bar(xs, hs, width=ws, bottom=bs, color=fc, alpha=alpha)
+                    xs = [b["x"] for b in bars]
+                    hs = [b["height"] for b in bars]
+                    ws = [b["width"] for b in bars]
+                    bs = [b["bottom"] for b in bars]
+                    colors = [b.get("facecolor") for b in bars]
+                    # 막대마다 저장된 개별 색상을 그대로 복원한다.
+                    # (예: Positive / Negative 막대그래프의 색 구분 유지)
+                    rax.bar(xs, hs, width=ws, bottom=bs, color=colors)
                 except Exception:
                     pass
             if axd.get("title"): rax.set_title(axd["title"])
