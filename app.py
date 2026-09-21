@@ -7,7 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import io, contextlib, traceback, time
-import base64, pickle, requests, gzip, re
+import base64, pickle, requests, gzip, re, gc
 
 st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
 
@@ -289,6 +289,12 @@ def github_save_result(key, result, updated):
 
     r = requests.put(url, headers=_gh_headers(), json=body, timeout=90)
     if r.status_code in (200, 201):
+        # 방금 저장한 최신 결과가 즉시 보이도록 읽기 캐시/용량 캐시 초기화
+        try:
+            _github_fetch_raw_cached.clear()
+            github_storage_stats.clear()
+        except Exception:
+            pass
         return True, f"GitHub 저장 완료 · 경량 저장 {len(raw)/1024/1024:.2f} MB"
     try:
         detail = r.json().get("message", r.text)
@@ -296,24 +302,41 @@ def github_save_result(key, result, updated):
         detail = r.text
     return False, f"GitHub 저장 실패 HTTP {r.status_code}: {detail}"
 
-def github_load_result(key):
-    """GitHub의 마지막 결과를 읽는다.
-    1MB를 넘는 파일도 읽을 수 있도록 raw media type을 사용한다.
+@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
+def _github_fetch_raw_cached(key):
+    """GitHub에는 압축된 원본 bytes만 공용 캐시한다.
+    큰 DataFrame/그래프 객체 자체를 전 페이지·전 세션 공용 캐시에 쌓지 않는다.
     """
     path = f"dashboard_data/{key}.pkl"
     url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}/contents/{path}"
+    headers = _gh_headers().copy()
+    headers["Accept"] = "application/vnd.github.raw+json"
+    r = requests.get(url, headers=headers, params={"ref": GH_BRANCH}, timeout=60)
+    if r.status_code != 200:
+        return None
+    return bytes(r.content)
+
+
+def github_load_result(key):
+    """현재 필요한 메뉴의 마지막 결과만 역직렬화한다.
+    네트워크 응답은 압축 bytes로 10분 캐시해 동시 접속 시 중복 호출을 줄인다.
+    """
     try:
-        headers = _gh_headers().copy()
-        headers["Accept"] = "application/vnd.github.raw+json"
-        r = requests.get(url, headers=headers, params={"ref": GH_BRANCH}, timeout=60)
-        if r.status_code != 200:
+        raw = _github_fetch_raw_cached(key)
+        if not raw:
             return None, None
-        raw = r.content
-        # v11은 gzip 압축. 기존 v10/v10.2의 비압축 pickle도 그대로 호환
         if raw[:2] == b"\x1f\x8b":
             raw = gzip.decompress(raw)
         obj = pickle.loads(raw)
-        return obj.get("result"), obj.get("updated")
+        result = obj.get("result")
+        updated = obj.get("updated")
+
+        # 구버전 미국 유동성/F&G 저장본에는 계산 namespace 전체가 들어 있어 메모리를 많이 썼다.
+        # 화면은 namespace를 사용하지 않으므로 로드 즉시 버린다.
+        if key in ("liq", "fg") and isinstance(result, tuple) and len(result) == 5:
+            result = (result[0], {}, result[2], result[3], result[4])
+
+        return result, updated
     except Exception:
         return None, None
 
@@ -329,17 +352,37 @@ def persist_current_result(key):
         st.error(msg)
     return ok, msg
 
-def load_persisted_once():
-    # 각 브라우저 세션 시작 시 GitHub의 마지막 저장 결과를 1회 읽음.
-    # 방문자는 계산하지 않으며 저장 결과만 조회.
-    if st.session_state.get("_persistent_loaded"):
+def load_active_result_only(active_key):
+    """v11.19 메모리 절약형 로딩.
+
+    - 방문자가 접속할 때 10개 결과를 한꺼번에 열지 않는다.
+    - 현재 메뉴 결과 1개만 session_state에 둔다.
+    - 메뉴를 바꾸면 이전 메뉴의 큰 결과 객체를 즉시 비우고 gc를 실행한다.
+    """
+    result_keys = [
+        "liq", "fg", "canary", "rotation", "ai",
+        "us_sector", "kr_sector", "kr_fg", "tw_revenue",
+    ]
+
+    released = False
+    for key in result_keys:
+        if key != active_key and st.session_state.get(key + "_result") is not None:
+            st.session_state[key + "_result"] = None
+            released = True
+
+    if released:
+        gc.collect()
+
+    if not active_key:
         return
-    for key in ["liq","fg","canary","trend","rotation","ai","us_sector","kr_sector","kr_fg","tw_revenue"]:
-        result, updated = github_load_result(key)
+
+    if st.session_state.get(active_key + "_result") is None:
+        result, updated = github_load_result(active_key)
         if result is not None:
-            st.session_state[key + "_result"] = result
-            st.session_state[key + "_updated"] = updated
-    st.session_state["_persistent_loaded"] = True
+            st.session_state[active_key + "_result"] = result
+            st.session_state[active_key + "_updated"] = updated
+
+    st.session_state["_active_storage_key"] = active_key
 
 
 st.markdown("""
@@ -718,7 +761,8 @@ def run_source(source):
         buf.write("\n"+traceback.format_exc())
     finally:
         plt.show=old_show
-    return ok,ns,buf.getvalue(),shown,figs
+    # 화면 재현에는 namespace가 필요하지 않다. 대형 DataFrame 중복 보관 방지.
+    return ok,{},buf.getvalue(),shown,figs
 
 def render_run(result, max_chars=22000):
     ok,ns,txt,shown,figs=result
@@ -1482,7 +1526,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.18")
+    st.caption("Market Dashboard · LIVE v11.19")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -1922,34 +1966,77 @@ def _draw_tw_company_chart(df, ticker, name):
 def render_taiwan_revenue(result):
     if not isinstance(result,dict) or not isinstance(result.get("data"),pd.DataFrame) or result["data"].empty:
         st.info("저장된 대만 월매출 데이터가 없습니다."); return
-    df=result["data"].copy(); df["Date"]=pd.to_datetime(df["Date"])
-    latest=df["Date"].max()
-    st.caption(f"{latest.strftime('%Y.%m')} 실적 · 단위 1mn TWD · 공식 MOPS 자료를 저장된 숫자로 그래프화")
-    latest_df=df[df["Date"].eq(latest)].copy()
-    for idx,(cat,members) in enumerate(TW_AI_UNIVERSE.items()):
-        tickers=list(members.keys())
-        cat_latest=latest_df[latest_df["Ticker"].astype(str).isin(tickers)]
-        cat_yoy=np.nan
-        # 카테고리 YoY = 동일 기업 집합의 현재 합 / 12개월 전 합
-        cur=cat_latest["Revenue_mn_TWD"].sum(min_count=1)
-        prev_date=(latest.to_period("M")-12).to_timestamp()
-        prev=df[(df["Date"].eq(prev_date)) & (df["Ticker"].astype(str).isin(cat_latest["Ticker"].astype(str)))]["Revenue_mn_TWD"].sum(min_count=1)
-        if pd.notna(cur) and pd.notna(prev) and prev!=0: cat_yoy=(cur/prev-1)*100
-        title=f"{cat} · {len(cat_latest)}/{len(tickers)}"
-        if pd.notna(cat_yoy): title+=f" · YoY {cat_yoy:+.1f}%"
-        with st.expander(title, expanded=(idx==0)):
-            present=[(t,members[t]) for t in tickers if t in set(df["Ticker"].astype(str))]
-            if not present:
-                st.caption("선택 종목 데이터 없음"); continue
-            for j in range(0,len(present),2):
-                cols=st.columns(2)
-                for k,(ticker,name) in enumerate(present[j:j+2]):
-                    with cols[k]:
-                        z=df[df["Ticker"].astype(str)==ticker].sort_values("Date")
-                        last=z.iloc[-1]
-                        st.markdown(f"**{name}** `{ticker}`  ·  **{last['Revenue_mn_TWD']:,.0f}**")
-                        _draw_tw_company_chart(df,ticker,name)
-                        st.caption(f"전월비 {last['MoM']:+.1f}%   ·   전년비 {last['YoY']:+.1f}%" if pd.notna(last.get('MoM')) and pd.notna(last.get('YoY')) else "")
+
+    # 원본 저장 데이터는 유지하되, 화면용 복사본 1개만 사용
+    df = result["data"]
+    if not pd.api.types.is_datetime64_any_dtype(df["Date"]):
+        df = df.copy()
+        df["Date"] = pd.to_datetime(df["Date"])
+
+    latest = df["Date"].max()
+    st.caption(f"{latest.strftime('%Y.%m')} 실적 · 단위 1mn TWD · 공식 MOPS 저장 데이터")
+    st.caption("메모리 절약형 표시: 전체 카테고리 요약은 즉시 보여주고, 선택한 카테고리의 기업 그래프만 생성합니다.")
+
+    latest_df = df[df["Date"].eq(latest)]
+    prev_date = (latest.to_period("M") - 12).to_timestamp()
+    prev_df = df[df["Date"].eq(prev_date)]
+
+    summary_rows = []
+    available_categories = []
+    ticker_series = df["Ticker"].astype(str)
+    all_present = set(ticker_series.unique())
+
+    for cat, members in TW_AI_UNIVERSE.items():
+        tickers = list(members.keys())
+        cat_latest = latest_df[latest_df["Ticker"].astype(str).isin(tickers)]
+        present_count = len(cat_latest)
+        cur = cat_latest["Revenue_mn_TWD"].sum(min_count=1)
+        current_tickers = set(cat_latest["Ticker"].astype(str))
+        prev = prev_df[prev_df["Ticker"].astype(str).isin(current_tickers)]["Revenue_mn_TWD"].sum(min_count=1)
+        yoy = (cur / prev - 1) * 100 if pd.notna(cur) and pd.notna(prev) and prev != 0 else np.nan
+        summary_rows.append({
+            "밸류체인": cat,
+            "기업수": f"{present_count}/{len(tickers)}",
+            "합산 YoY": yoy,
+        })
+        if any(str(t) in all_present for t in tickers):
+            available_categories.append(cat)
+
+    summary = pd.DataFrame(summary_rows)
+    if not summary.empty:
+        view = summary.copy()
+        view["합산 YoY"] = view["합산 YoY"].map(lambda x: f"{x:+.1f}%" if pd.notna(x) else "-")
+        st.dataframe(view, use_container_width=True, hide_index=True)
+
+    if not available_categories:
+        st.info("표시 가능한 카테고리 데이터가 없습니다.")
+        return
+
+    selected_cat = st.selectbox(
+        "그래프로 볼 밸류체인 선택",
+        available_categories,
+        key="tw_selected_category",
+    )
+    members = TW_AI_UNIVERSE[selected_cat]
+    present = [(t, members[t]) for t in members if str(t) in all_present]
+
+    st.markdown(f"### {selected_cat}")
+    for j in range(0, len(present), 2):
+        cols = st.columns(2)
+        for k, (ticker, name) in enumerate(present[j:j+2]):
+            with cols[k]:
+                z = df[ticker_series == str(ticker)].sort_values("Date")
+                if z.empty:
+                    continue
+                last = z.iloc[-1]
+                st.markdown(f"**{name}** `{ticker}`  ·  **{last['Revenue_mn_TWD']:,.0f}**")
+                _draw_tw_company_chart(df, ticker, name)
+                if pd.notna(last.get("MoM")) and pd.notna(last.get("YoY")):
+                    st.caption(f"전월비 {last['MoM']:+.1f}%   ·   전년비 {last['YoY']:+.1f}%")
+
+    # matplotlib 객체/중간 객체 정리
+    plt.close("all")
+    gc.collect()
 
 
 # ---------- 일본: 등록 필요 없는 Statistics Dashboard API ----------
@@ -2481,7 +2568,18 @@ for _k, _v in _SAFE_STATE_DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
-load_persisted_once()
+PAGE_STORAGE_KEY = {
+    "미국 유동성 체크": "liq",
+    "미국 피어앤그리드 오실레이터": "fg",
+    "미국 위험신호": "canary",
+    "한국 피어앤그리드 오실레이터": "kr_fg",
+    "AI하드웨어 주가 모멘텀 점검": "ai",
+    "대만 월별 매출": "tw_revenue",
+    "미국 52주 신고가 전략 점검": "rotation",
+    "미국 ETF 소라티노 및 상대강도": "us_sector",
+    "한국 ETF 소라티노 및 상대강도": "kr_sector",
+}
+load_active_result_only(PAGE_STORAGE_KEY.get(ACTIVE_PAGE))
 
 if ACTIVE_PAGE == "미국 유동성 체크":
     st.subheader("미국 유동성 체크")
