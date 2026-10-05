@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc
 
-# v11.26: Topoint 월매출 추가 + 일본·대만 시세점검 신설
+# v11.27: 대만 월매출 4개 연도 자동 백필/롤링 + AI·일본대만 그래프 Colab 원형 보존
 st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
 
 
@@ -154,6 +154,26 @@ def _figure_marker(fig):
         return {"__dashboard_png__": True, "data": b.getvalue()}
     except Exception:
         return None
+
+def _figure_png_marker(fig, dpi=105):
+    """Colab 화면과 최대한 동일하게 축/범례/라벨까지 PNG로 보존한다.
+
+    AI 하드웨어와 일본·대만 시세점검처럼 그래프의 범례·카테고리 라벨이
+    해석에 중요한 화면에만 선택적으로 사용한다.
+    """
+    try:
+        b = io.BytesIO()
+        fig.savefig(
+            b,
+            format="png",
+            dpi=dpi,
+            bbox_inches="tight",
+            facecolor=fig.get_facecolor(),
+        )
+        return {"__dashboard_png__": True, "data": b.getvalue()}
+    except Exception:
+        return _figure_marker(fig)
+
 
 def _storage_safe(obj, depth=0):
     """계산 namespace에서 화면 재현에 필요한 직렬화 가능한 값만 남긴다."""
@@ -1064,7 +1084,7 @@ JP_TW_MARKET_SRC = '# ==========================================================
 # - Streamlit dataframe 대신 notebook형 정적 표 사용
 # - 그래프는 PNG 누적 대신 좌표 중심 저장
 # ============================================================
-def run_colab_source(source):
+def run_colab_source(source, figure_mode="chartdata"):
     events = []
     diagnostics = io.StringIO()
     raw_stdout = io.StringIO()
@@ -1093,7 +1113,11 @@ def run_colab_source(source):
     def _show(*args, **kwargs):
         try:
             fig = plt.gcf()
-            marker = _figure_marker(fig)
+            marker = (
+                _figure_png_marker(fig)
+                if figure_mode == "png"
+                else _figure_marker(fig)
+            )
             if marker is not None:
                 events.append({"type": "figure", "figure": marker})
             plt.close(fig)
@@ -1244,11 +1268,13 @@ def render_colab_result(result):
 
 # 세 분석은 원본 Colab source를 거의 그대로 실행하고 출력 순서까지 저장한다.
 def run_ai():
-    return run_colab_source(AI_SRC)
+    # 범례(1M/2M/3M/6M, Positive/Negative), 축 라벨, 색상을 Colab과 동일하게 보존
+    return run_colab_source(AI_SRC, figure_mode="png")
 
 
 def run_jp_tw_market():
-    return run_colab_source(JP_TW_MARKET_SRC)
+    # barh 카테고리명/축/범례까지 Colab 그래프 모양 그대로 보존
+    return run_colab_source(JP_TW_MARKET_SRC, figure_mode="png")
 
 
 def run_rotation():
@@ -1929,85 +1955,176 @@ def _fetch_tw_latest_openapi():
 
 
 def update_taiwan_revenue(existing=None):
+    """대만 월매출 업데이트.
+
+    - 화면/저장은 '현재 연도 포함 최근 4개 연도'만 유지한다.
+      예: 2026 -> 2023~2026, 2027 -> 2024~2027, 2028 -> 2025~2028
+    - 평소에는 최근 3개월만 재조회한다.
+    - 유니버스가 바뀌었거나(예: Topoint 신규 추가), 이 정책으로 처음 업데이트하는 경우에는
+      최근 4개 연도 전체를 자동 백필한다.
+    """
     existing_df = None
-    if isinstance(existing, dict) and isinstance(existing.get("data"), pd.DataFrame):
-        existing_df = existing["data"].copy()
+    previous_universe = set()
+    previous_policy = None
+
+    if isinstance(existing, dict):
+        if isinstance(existing.get("data"), pd.DataFrame):
+            existing_df = existing["data"].copy()
+        previous_universe = set(str(x) for x in (existing.get("universe_tickers") or []))
+        previous_policy = existing.get("history_policy")
+
     today = pd.Timestamp.today().normalize()
-    # 기존 저장이 있으면 최근 3개월만 재확인, 처음이면 2023년부터 백필
-    if existing_df is not None and not existing_df.empty:
-        start = max(existing_df["Date"].max().to_period("M") - 2, pd.Period("2023-01", freq="M"))
-    else:
-        start = pd.Period("2023-01", freq="M")
+    current_year = int(today.year)
+    start_year = current_year - 3
+    window_start = pd.Period(f"{start_year}-01", freq="M")
     end = today.to_period("M")
-    frames=[]; errors=[]
+    current_universe = set(str(x) for x in TW_TICKER_META.keys())
+
+    # v11.27 첫 업데이트 또는 종목 추가/삭제 시에는 4개 연도 전체를 다시 채운다.
+    need_full_backfill = (
+        existing_df is None
+        or existing_df.empty
+        or previous_policy != "rolling_4_calendar_years_v1"
+        or previous_universe != current_universe
+    )
+
+    if need_full_backfill:
+        start = window_start
+    else:
+        max_existing = pd.to_datetime(existing_df["Date"]).max().to_period("M")
+        start = max(max_existing - 2, window_start)
+
+    frames = []
+    errors = []
     months = pd.period_range(start, end, freq="M")
-    for i,per in enumerate(months):
-        for market in ("TWSE","TPEX"):
+
+    for i, per in enumerate(months):
+        for market in ("TWSE", "TPEX"):
             try:
-                z=_fetch_mops_month(per.year, per.month, market)
-                if not z.empty: frames.append(z)
+                z = _fetch_mops_month(per.year, per.month, market)
+                if not z.empty:
+                    frames.append(z)
             except Exception as e:
                 errors.append(f"{per} {market}: {e}")
         if i and i % 12 == 0:
             time.sleep(0.25)
+
     try:
-        latest=_fetch_tw_latest_openapi()
-        if not latest.empty: frames.append(latest)
+        latest = _fetch_tw_latest_openapi()
+        if not latest.empty:
+            frames.append(latest)
     except Exception as e:
         errors.append(f"latest openapi: {e}")
 
     new = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
     if existing_df is not None and not existing_df.empty:
-        all_df = pd.concat([existing_df,new],ignore_index=True)
+        all_df = pd.concat([existing_df, new], ignore_index=True)
     else:
         all_df = new
+
     if all_df.empty:
         raise RuntimeError("대만 MOPS에서 선택 종목의 월매출을 가져오지 못했습니다.")
-    all_df["Date"]=pd.to_datetime(all_df["Date"])
-    all_df=all_df.sort_values(["Ticker","Date"]).drop_duplicates(["Date","Ticker"],keep="last")
+
+    all_df["Date"] = pd.to_datetime(all_df["Date"])
+    all_df["Ticker"] = all_df["Ticker"].astype(str)
+    all_df = (
+        all_df
+        .sort_values(["Ticker", "Date"])
+        .drop_duplicates(["Date", "Ticker"], keep="last")
+    )
+
+    # 저장 데이터도 최근 4개 연도만 유지해 장기 누적 용량을 막는다.
+    all_df = all_df[
+        all_df["Date"] >= window_start.to_timestamp()
+    ].copy()
+
     # 공식 MoM/YoY가 없을 때 저장된 시계열에서 계산
-    all_df["Revenue_mn_TWD"]=pd.to_numeric(all_df["Revenue_mn_TWD"],errors="coerce")
-    calc_mom=all_df.groupby("Ticker")["Revenue_mn_TWD"].pct_change()*100
-    calc_yoy=all_df.groupby("Ticker")["Revenue_mn_TWD"].pct_change(12)*100
-    if "MoM" not in all_df: all_df["MoM"]=calc_mom
-    else: all_df["MoM"]=pd.to_numeric(all_df["MoM"],errors="coerce").fillna(calc_mom)
-    if "YoY" not in all_df: all_df["YoY"]=calc_yoy
-    else: all_df["YoY"]=pd.to_numeric(all_df["YoY"],errors="coerce").fillna(calc_yoy)
+    all_df["Revenue_mn_TWD"] = pd.to_numeric(all_df["Revenue_mn_TWD"], errors="coerce")
+    calc_mom = all_df.groupby("Ticker")["Revenue_mn_TWD"].pct_change() * 100
+    calc_yoy = all_df.groupby("Ticker")["Revenue_mn_TWD"].pct_change(12) * 100
+
+    if "MoM" not in all_df:
+        all_df["MoM"] = calc_mom
+    else:
+        all_df["MoM"] = pd.to_numeric(all_df["MoM"], errors="coerce").fillna(calc_mom)
+
+    if "YoY" not in all_df:
+        all_df["YoY"] = calc_yoy
+    else:
+        all_df["YoY"] = pd.to_numeric(all_df["YoY"], errors="coerce").fillna(calc_yoy)
+
     return {
         "data": all_df.reset_index(drop=True),
         "source": "Taiwan MOPS / TWSE / TPEX official monthly revenue",
         "errors": errors[-20:],
         "universe_count": len(TW_TICKER_META),
+        "universe_tickers": sorted(current_universe),
+        "history_policy": "rolling_4_calendar_years_v1",
+        "history_start_year": start_year,
+        "history_end_year": current_year,
+        "full_backfill_this_run": bool(need_full_backfill),
     }
 
 
 def _draw_tw_company_chart(df, ticker, name):
-    z=df[df["Ticker"].astype(str)==str(ticker)].dropna(subset=["Date","Revenue_mn_TWD"]).copy()
+    current_year = int(pd.Timestamp.today().year)
+    start_year = current_year - 3
+    z = df[
+        (df["Ticker"].astype(str) == str(ticker))
+        & (df["Date"].dt.year.between(start_year, current_year))
+    ].dropna(subset=["Date", "Revenue_mn_TWD"]).copy()
+
     if z.empty:
-        st.caption("데이터 없음"); return
-    z["Year"]=z["Date"].dt.year; z["Month"]=z["Date"].dt.month
-    fig,ax=plt.subplots(figsize=(6.4,3.0))
-    for yr,g in z.groupby("Year"):
-        g=g.sort_values("Month")
-        ax.plot(g["Month"],g["Revenue_mn_TWD"],marker="o",linewidth=1.7,label=str(int(yr)))
-    ax.set_xlim(1,12); ax.set_xticks([1,3,5,7,9,11]); ax.grid(alpha=.22)
+        st.caption("데이터 없음")
+        return
+
+    z["Year"] = z["Date"].dt.year
+    z["Month"] = z["Date"].dt.month
+    fig, ax = plt.subplots(figsize=(6.4, 3.0))
+
+    # 항상 현재 연도 포함 최근 4개 연도 순서로 표시
+    for yr in range(start_year, current_year + 1):
+        g = z[z["Year"] == yr].sort_values("Month")
+        if not g.empty:
+            ax.plot(
+                g["Month"], g["Revenue_mn_TWD"],
+                marker="o", linewidth=1.7, label=str(yr)
+            )
+
+    ax.set_xlim(1, 12)
+    ax.set_xticks([1, 3, 5, 7, 9, 11])
+    ax.grid(alpha=.22)
     ax.set_ylabel("1mn TWD")
-    ax.legend(ncol=min(4,z["Year"].nunique()),fontsize=8,frameon=False)
-    plt.tight_layout(); st.pyplot(fig,use_container_width=True); plt.close(fig)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(ncol=4, fontsize=8, frameon=False)
+    plt.tight_layout()
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 
 
 def render_taiwan_revenue(result):
     if not isinstance(result,dict) or not isinstance(result.get("data"),pd.DataFrame) or result["data"].empty:
         st.info("저장된 대만 월매출 데이터가 없습니다."); return
 
-    # 원본 저장 데이터는 유지하되, 화면용 복사본 1개만 사용
+    # 화면은 호출 시점 기준 현재 연도 포함 최근 4개 연도만 표시
     df = result["data"]
     if not pd.api.types.is_datetime64_any_dtype(df["Date"]):
         df = df.copy()
         df["Date"] = pd.to_datetime(df["Date"])
 
+    current_year = int(pd.Timestamp.today().year)
+    start_year = current_year - 3
+    df = df[df["Date"].dt.year.between(start_year, current_year)].copy()
+    if df.empty:
+        st.info("최근 4개 연도에 표시할 대만 월매출 데이터가 없습니다.")
+        return
+
     latest = df["Date"].max()
-    st.caption(f"{latest.strftime('%Y.%m')} 실적 · 단위 1mn TWD · 공식 MOPS 저장 데이터")
+    st.caption(
+        f"{latest.strftime('%Y.%m')} 실적 · {start_year}~{current_year} 최근 4개 연도 · "
+        "단위 1mn TWD · 공식 MOPS 저장 데이터"
+    )
     st.caption("메모리 절약형 표시: 전체 카테고리 요약은 즉시 보여주고, 선택한 카테고리의 기업 그래프만 생성합니다.")
 
     latest_df = df[df["Date"].eq(latest)]
@@ -2748,13 +2865,13 @@ if ACTIVE_PAGE == "일본과 대만 시세점검":
 # ============================================================
 if ACTIVE_PAGE == "대만 월별 매출":
     st.subheader("대만 기업 월별 매출")
-    st.caption("AI·반도체 공급망 관심종목 · MOPS/TWSE/TPEX 공식 월매출 · 2023년부터 저장")
+    st.caption("AI·반도체 공급망 관심종목 · MOPS/TWSE/TPEX 공식 월매출 · 현재 연도 포함 최근 4개 연도 자동 유지")
     st.caption("분류는 제공해주신 레퍼런스 화면의 26개 밸류체인 구성을 참고했고, 실제 매출 숫자는 대만 공식 공시에서 직접 가져옵니다.")
     updated_caption("tw_revenue")
     if IS_ADMIN:
-        st.info("처음 1회는 2023년부터 과거 월매출을 채웁니다. 그 다음부터는 최근 3개월만 다시 확인해 저장하므로 가볍습니다.")
+        st.info("현재 연도 포함 최근 4개 연도를 유지합니다. 새 종목이 추가되면 4개 연도를 자동 백필하고, 평소 업데이트는 최근 3개월만 다시 확인합니다.")
         if st.button("🔄 대만 월매출 최신 데이터 업데이트", key="upd_tw_revenue"):
-            with st.spinner("공식 MOPS 월매출을 확인하고 있습니다. 첫 실행은 과거자료 때문에 시간이 조금 걸릴 수 있습니다..."):
+            with st.spinner("공식 MOPS 월매출을 확인하고 있습니다. 새 종목/새 정책 첫 실행은 최근 4개 연도 백필 때문에 시간이 조금 걸릴 수 있습니다..."):
                 try:
                     st.session_state.tw_revenue_result = update_taiwan_revenue(st.session_state.get("tw_revenue_result"))
                     st.session_state.tw_revenue_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
