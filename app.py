@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc
 
-# v11.25: 52W 최신 코드 반영 + 미국 ETF 소라티노/RS ARKG·GNOM 추가(MDEC 제외)
+# v11.26: Topoint 월매출 추가 + 일본·대만 시세점검 신설
 st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
 
 
@@ -361,7 +361,7 @@ def load_active_result_only(active_key):
     - 메뉴를 바꾸면 이전 메뉴의 큰 결과 객체를 즉시 비우고 gc를 실행한다.
     """
     result_keys = [
-        "liq", "fg", "canary", "rotation", "ai",
+        "liq", "fg", "canary", "rotation", "ai", "jp_tw_market",
         "us_sector", "kr_sector", "kr_fg", "tw_revenue",
     ]
 
@@ -1055,6 +1055,9 @@ def render_korea_sector_compact(ns):
             _render_static_df(df)
 
 
+JP_TW_MARKET_SRC = '# ============================================================\n\n# JAPAN + TAIWAN MARKET LEADERSHIP MONITOR\n\n# Google Colab Full Version\n\n# ------------------------------------------------------------\n\n# Features\n\n# 1) Japan / Taiwan stock basket monitoring\n\n# 2) Daily / 5D / 20D returns\n\n# 3) Breadth (% of stocks up on the day)\n\n# 4) Country-sector ranking\n\n# 5) Cross-country Global Theme ranking\n\n# 6) Theme Strength Score\n\n# 7) Top / Bottom stocks\n\n# 8) 20-day theme trend chart\n\n# 9) Korea watchlist mapping\n\n# 10) Optional Excel export\n\n#\n\n# All labels are in English to avoid Korean font issues in Colab.\n\n# ============================================================\n\n\n\n\n\n\nimport yfinance as yf\n\nimport pandas as pd\n\nimport numpy as np\n\nimport matplotlib.pyplot as plt\n\n\nfrom datetime import datetime\n\n\n\npd.set_option("display.max_rows", 300)\n\npd.set_option("display.max_columns", 100)\n\npd.set_option("display.width", 200)\n\n\n\n# ============================================================\n\n# 1. CONFIGURATION\n\n# ============================================================\n\n\n\nLOOKBACK_PERIOD = "3mo"\n\nINTERVAL = "1d"\n\n\n\nW_DAILY = 0.40\n\nW_5D = 0.30\n\nW_20D = 0.20\n\nW_BREADTH = 0.10\n\n\n\n# ============================================================\n\n# 2. STOCK UNIVERSE\n\n# ============================================================\n\n\n\nSTOCKS = {\n\n\n\n    # JAPAN\n\n    "Japan - MLCC / Components": {\n\n        "Murata": "6981.T",\n\n        "TDK": "6762.T",\n\n        "Taiyo Yuden": "6976.T",\n\n        "Kyocera": "6971.T",\n\n    },\n\n\n\n    "Japan - Semiconductor Equipment": {\n\n        "Tokyo Electron": "8035.T",\n\n        "Advantest": "6857.T",\n\n        "DISCO": "6146.T",\n\n        "Lasertec": "6920.T",\n\n        "SCREEN Holdings": "7735.T",\n\n    },\n\n\n\n    "Japan - Optical / Cable": {\n\n        "Fujikura": "5803.T",\n\n        "Furukawa Electric": "5801.T",\n\n        "Sumitomo Electric": "5802.T",\n\n    },\n\n\n\n    "Japan - Semiconductor Materials": {\n\n        "Shin-Etsu Chemical": "4063.T",\n\n        "SUMCO": "3436.T",\n\n        "Resonac": "4004.T",\n\n        "Mitsui Mining & Smelting": "5706.T",\n\n    },\n\n\n\n    "Japan - AI Substrate / Packaging": {\n\n        "Ibiden": "4062.T",\n\n        "Ajinomoto": "2802.T",\n\n    },\n\n\n\n    "Japan - Memory": {\n\n        "Kioxia": "285A.T",\n\n    },\n\n\n\n    "Japan - Power Semiconductor": {\n\n        "ROHM": "6963.T",\n\n        "Mitsubishi Electric": "6503.T",\n\n        "Fuji Electric": "6504.T",\n\n        "Renesas": "6723.T",\n\n    },\n\n\n\n    "Japan - Data Center Power / Cooling": {\n\n        "Hitachi": "6501.T",\n\n        "Daikin": "6367.T",\n\n        "Nidec": "6594.T",\n\n    },\n\n\n\n    # TAIWAN\n\n    "Taiwan - Foundry / IC": {\n\n        "TSMC": "2330.TW",\n\n        "UMC": "2303.TW",\n\n        "MediaTek": "2454.TW",\n\n    },\n\n\n\n    "Taiwan - Memory": {\n\n        "Nanya Technology": "2408.TW",\n\n        "Winbond": "2344.TW",\n\n        "Macronix": "2337.TW",\n\n    },\n\n\n\n    "Taiwan - OSAT / Packaging": {\n\n        "ASE Technology": "3711.TW",\n\n        "ChipMOS": "8150.TW",\n\n        "Powertech": "6239.TW",\n\n    },\n\n\n\n    "Taiwan - AI Server ODM": {\n\n        "Quanta": "2382.TW",\n\n        "Wiwynn": "6669.TW",\n\n        "Wistron": "3231.TW",\n\n        "Hon Hai": "2317.TW",\n\n        "Inventec": "2356.TW",\n\n        "Gigabyte": "2376.TW",\n\n    },\n\n\n\n    "Taiwan - PCB / Substrate": {\n\n        "Unimicron": "3037.TW",\n\n        "Kinsus": "3189.TW",\n\n        "Zhen Ding": "4958.TW",\n\n        "Compeq": "2313.TW",\n\n        "Tripod": "3044.TW",\n\n        "Elite Material": "2383.TW",\n        "Topoint": "8021.TW",\n\n    },\n\n\n\n    "Taiwan - Network / Optical": {\n\n        "Accton": "2345.TW",\n\n        "Wistron NeWeb": "6285.TW",\n\n        "Sercomm": "5388.TW",\n\n    },\n\n\n\n    "Taiwan - Server Power": {\n\n        "Delta Electronics": "2308.TW",\n\n        "Lite-On": "2301.TW",\n\n        "Chicony Power": "6412.TW",\n\n        "AcBel": "6282.TW",\n\n    },\n\n\n\n    "Taiwan - Cooling": {\n\n        "Auras Technology": "3324.TW",\n\n        "Asia Vital Components": "3017.TW",\n\n    },\n\n\n\n    "Taiwan - Semiconductor Equipment": {\n\n        "Gudeng Precision": "3680.TW",\n\n        "Scientech": "3583.TW",\n\n        "Grand Process": "3131.TW",\n\n    },\n\n}\n\n\n\n# ============================================================\n\n# 3. GLOBAL THEME MAP\n\n# ============================================================\n\n\n\nGLOBAL_THEMES = {\n\n    "MLCC / Electronic Components": [\n\n        "Murata", "TDK", "Taiyo Yuden", "Kyocera"\n\n    ],\n\n    "Semiconductor Equipment": [\n\n        "Tokyo Electron", "Advantest", "DISCO", "Lasertec", "SCREEN Holdings",\n\n        "Gudeng Precision", "Scientech", "Grand Process"\n\n    ],\n\n    "Memory": [\n\n        "Kioxia", "Nanya Technology", "Winbond", "Macronix"\n\n    ],\n\n    "AI Server": [\n\n        "Quanta", "Wiwynn", "Wistron", "Hon Hai", "Inventec", "Gigabyte"\n\n    ],\n\n    "PCB / Substrate / Packaging": [\n\n        "Ibiden", "Ajinomoto", "Unimicron", "Kinsus", "Zhen Ding",\n\n        "Compeq", "Tripod", "Elite Material", "Topoint", "ASE Technology", "ChipMOS", "Powertech"\n\n    ],\n\n    "Optical / Network": [\n\n        "Fujikura", "Furukawa Electric", "Sumitomo Electric", "Accton", "Wistron NeWeb", "Sercomm"\n\n    ],\n\n    "Power Semiconductor": [\n\n        "ROHM", "Mitsubishi Electric", "Fuji Electric", "Renesas"\n\n    ],\n\n    "Data Center Power": [\n\n        "Hitachi", "Nidec", "Delta Electronics", "Lite-On", "Chicony Power", "AcBel"\n\n    ],\n\n    "Data Center Cooling": [\n\n        "Daikin", "Auras Technology", "Asia Vital Components"\n\n    ],\n\n    "Foundry / IC": [\n\n        "TSMC", "UMC", "MediaTek"\n\n    ],\n\n    "Semiconductor Materials": [\n\n        "Shin-Etsu Chemical", "SUMCO", "Resonac", "Mitsui Mining & Smelting"\n\n    ],\n\n}\n\n\n\n# ============================================================\n\n# 4. KOREA WATCHLIST MAP\n\n# ============================================================\n\n\n\nKOREA_WATCHLIST = {\n\n    "MLCC / Electronic Components": "Samsung Electro-Mechanics",\n\n    "Semiconductor Equipment": "TES, PSK, Jusung Engineering, Eugene Technology, HPSP, EO Technics",\n\n    "Memory": "Samsung Electronics, SK hynix",\n\n    "AI Server": "Samsung Electronics, SK hynix, Samsung Electro-Mechanics",\n\n    "PCB / Substrate / Packaging": "Korea Circuit, Daeduck Electronics, Isu Petasys, Samsung Electro-Mechanics",\n\n    "Optical / Network": "RF Materials, OE Solutions, Wooriro, TFE",\n\n    "Power Semiconductor": "DB HiTek, KEC, RFHIC-related names",\n\n    "Data Center Power": "HD Hyundai Electric, Hyosung Heavy Industries, LS ELECTRIC, SNT Energy",\n\n    "Data Center Cooling": "Cooling / HVAC / heat-management related Korea names",\n\n    "Foundry / IC": "Samsung Electronics, DB HiTek",\n\n    "Semiconductor Materials": "ENF Technology, Soulbrain, Hansol Chemical, Dongjin Semichem",\n\n}\n\n\n\n# ============================================================\n\n# 5. BUILD LOOKUP TABLES\n\n# ============================================================\n\n\n\nticker_info = {}\n\ncompany_to_ticker = {}\n\n\n\nfor sector, companies in STOCKS.items():\n\n    for company, ticker in companies.items():\n\n        country = "Japan" if ticker.endswith(".T") else "Taiwan"\n\n        ticker_info[ticker] = {\n\n            "Country": country,\n\n            "Sector": sector,\n\n            "Company": company,\n\n        }\n\n        company_to_ticker[company] = ticker\n\n\n\ntickers = list(ticker_info.keys())\n\n\n\nprint("=" * 90)\n\nprint("JAPAN + TAIWAN MARKET LEADERSHIP MONITOR")\n\nprint("=" * 90)\n\nprint(f"Requested ticker count: {len(tickers)}")\n\nprint(f"Run time: {datetime.now().strftime(\'%Y-%m-%d %H:%M:%S\')}")\n\nprint()\n\n\n\n# ============================================================\n\n# 6. DOWNLOAD DATA\n\n# ============================================================\n\n\n\nraw = yf.download(\n\n    tickers=tickers,\n\n    period=LOOKBACK_PERIOD,\n\n    interval=INTERVAL,\n\n    auto_adjust=True,\n\n    progress=False,\n\n    group_by="column",\n\n    threads=True,\n\n)\n\n\n\nif isinstance(raw.columns, pd.MultiIndex):\n\n    close = raw["Close"].copy()\n\nelse:\n\n    close = raw[["Close"]].copy()\n\n    close.columns = tickers[:1]\n\n\n\nclose = close.dropna(axis=1, how="all")\n\n\n\nprint(f"Valid ticker count: {len(close.columns)}")\n\n\n\nmissing = sorted(set(tickers) - set(close.columns))\n\nif missing:\n\n    print("\\nTickers with no usable data:")\n\n    for t in missing:\n\n        name = ticker_info.get(t, {}).get("Company", "")\n\n        print(f" - {t}: {name}")\n\n\n\n# ============================================================\n\n# 7. RETURN FUNCTIONS\n\n# ============================================================\n\n\n\ndef calc_return(series, n):\n\n    s = series.dropna()\n\n    if len(s) <= n:\n\n        return np.nan\n\n    return (s.iloc[-1] / s.iloc[-1 - n] - 1) * 100\n\n\n\n\n\ndef safe_last(series):\n\n    s = series.dropna()\n\n    return s.iloc[-1] if len(s) > 0 else np.nan\n\n\n\n# ============================================================\n\n# 8. STOCK LEVEL DATA\n\n# ============================================================\n\n\n\nrows = []\n\n\n\nfor ticker in close.columns:\n\n    s = close[ticker].dropna()\n\n    if len(s) < 2:\n\n        continue\n\n\n\n    info = ticker_info[ticker]\n\n\n\n    rows.append({\n\n        "Country": info["Country"],\n\n        "Sector": info["Sector"],\n\n        "Company": info["Company"],\n\n        "Ticker": ticker,\n\n        "Last": safe_last(s),\n\n        "Daily %": calc_return(s, 1),\n\n        "5D %": calc_return(s, 5),\n\n        "20D %": calc_return(s, 20),\n\n    })\n\n\n\nstock_df = pd.DataFrame(rows)\n\n\n\n# ============================================================\n\n# 9. COUNTRY-SECTOR SUMMARY\n\n# ============================================================\n\n\n\nsector_df = (\n\n    stock_df\n\n    .groupby(["Country", "Sector"])\n\n    .agg(\n\n        Stock_Count=("Company", "count"),\n\n        Daily_Avg=("Daily %", "mean"),\n\n        Daily_Median=("Daily %", "median"),\n\n        Up_Count=("Daily %", lambda x: (x > 0).sum()),\n\n        Ret_5D=("5D %", "mean"),\n\n        Ret_20D=("20D %", "mean"),\n\n    )\n\n    .reset_index()\n\n)\n\n\n\nsector_df["Breadth %"] = (\n\n    sector_df["Up_Count"] / sector_df["Stock_Count"] * 100\n\n)\n\n\n\nsector_df["Strength Score"] = (\n\n    sector_df["Daily_Avg"] * W_DAILY\n\n    + sector_df["Ret_5D"] * W_5D\n\n    + sector_df["Ret_20D"] * W_20D\n\n    + (sector_df["Breadth %"] - 50) / 10 * W_BREADTH\n\n)\n\n\n\nsector_df = sector_df.sort_values("Strength Score", ascending=False)\n\n\n\n# ============================================================\n\n# 10. GLOBAL THEME SUMMARY\n\n# ============================================================\n\n\n\ntheme_rows = []\n\n\n\nfor theme, company_list in GLOBAL_THEMES.items():\n\n    temp = stock_df[stock_df["Company"].isin(company_list)].copy()\n\n    if temp.empty:\n\n        continue\n\n\n\n    stock_count = len(temp)\n\n    up_count = (temp["Daily %"] > 0).sum()\n\n    breadth = up_count / stock_count * 100\n\n\n\n    daily_avg = temp["Daily %"].mean()\n\n    daily_median = temp["Daily %"].median()\n\n    ret_5d = temp["5D %"].mean()\n\n    ret_20d = temp["20D %"].mean()\n\n\n\n    score = (\n\n        daily_avg * W_DAILY\n\n        + ret_5d * W_5D\n\n        + ret_20d * W_20D\n\n        + (breadth - 50) / 10 * W_BREADTH\n\n    )\n\n\n\n    theme_rows.append({\n\n        "Theme": theme,\n\n        "Stock Count": stock_count,\n\n        "Daily Avg %": daily_avg,\n\n        "Daily Median %": daily_median,\n\n        "5D Avg %": ret_5d,\n\n        "20D Avg %": ret_20d,\n\n        "Breadth %": breadth,\n\n        "Strength Score": score,\n\n        "Korea Watchlist": KOREA_WATCHLIST.get(theme, ""),\n\n    })\n\n\n\ntheme_df = pd.DataFrame(theme_rows).sort_values("Strength Score", ascending=False)\n\n\n\n# ============================================================\n\n# 11. MAIN TABLES\n\n# ============================================================\n\n\n\nprint("\\n" + "=" * 90)\n\nprint("1) GLOBAL THEME RANKING")\n\nprint("=" * 90)\n\n\n\ndisplay(\n\n    theme_df[\n\n        [\n\n            "Theme",\n\n            "Daily Avg %",\n\n            "Daily Median %",\n\n            "5D Avg %",\n\n            "20D Avg %",\n\n            "Breadth %",\n\n            "Strength Score",\n\n            "Korea Watchlist",\n\n        ]\n\n    ].round(2)\n\n)\n\n\n\nprint("\\n" + "=" * 90)\n\nprint("2) COUNTRY-SECTOR RANKING")\n\nprint("=" * 90)\n\n\n\ndisplay(\n\n    sector_df[\n\n        [\n\n            "Country",\n\n            "Sector",\n\n            "Stock_Count",\n\n            "Daily_Avg",\n\n            "Daily_Median",\n\n            "Ret_5D",\n\n            "Ret_20D",\n\n            "Breadth %",\n\n            "Strength Score",\n\n        ]\n\n    ].round(2)\n\n)\n\n\n\nprint("\\n" + "=" * 90)\n\nprint("3) TOP 20 STOCKS TODAY")\n\nprint("=" * 90)\n\n\n\ndisplay(\n\n    stock_df.sort_values("Daily %", ascending=False)[\n\n        ["Country", "Sector", "Company", "Daily %", "5D %", "20D %"]\n\n    ].head(20).round(2)\n\n)\n\n\n\nprint("\\n" + "=" * 90)\n\nprint("4) BOTTOM 20 STOCKS TODAY")\n\nprint("=" * 90)\n\n\n\ndisplay(\n\n    stock_df.sort_values("Daily %", ascending=True)[\n\n        ["Country", "Sector", "Company", "Daily %", "5D %", "20D %"]\n\n    ].head(20).round(2)\n\n)\n\n\n\n# ============================================================\n\n# 12. CHART - GLOBAL THEME DAILY RETURN\n\n# ============================================================\n\n\n\nplot_df = theme_df.sort_values("Daily Avg %", ascending=True)\n\n\n\nplt.figure(figsize=(12, 8))\n\nplt.barh(plot_df["Theme"], plot_df["Daily Avg %"])\n\nplt.axvline(0)\n\nplt.title("Global Theme - Daily Average Return")\n\nplt.xlabel("Return (%)")\n\nplt.grid(axis="x", alpha=0.25)\n\nplt.tight_layout()\n\nplt.show()\n\n\n\n# ============================================================\n\n# 13. CHART - GLOBAL THEME STRENGTH SCORE\n\n# ============================================================\n\n\n\nplot_df = theme_df.sort_values("Strength Score", ascending=True)\n\n\n\nplt.figure(figsize=(12, 8))\n\nplt.barh(plot_df["Theme"], plot_df["Strength Score"])\n\nplt.axvline(0)\n\nplt.title("Global Theme - Strength Score")\n\nplt.xlabel("Score")\n\nplt.grid(axis="x", alpha=0.25)\n\nplt.tight_layout()\n\nplt.show()\n\n\n\n# ============================================================\n\n# 14. CHART - GLOBAL THEME BREADTH\n\n# ============================================================\n\n\n\nplot_df = theme_df.sort_values("Breadth %", ascending=True)\n\n\n\nplt.figure(figsize=(12, 8))\n\nplt.barh(plot_df["Theme"], plot_df["Breadth %"])\n\nplt.axvline(50)\n\nplt.title("Global Theme - Breadth")\n\nplt.xlabel("Stocks Up Today (%)")\n\nplt.xlim(0, 100)\n\nplt.grid(axis="x", alpha=0.25)\n\nplt.tight_layout()\n\nplt.show()\n\n\n\n# ============================================================\n\n# 15. BUILD NORMALIZED 20-DAY THEME INDEX\n\n# ============================================================\n\n\n\ntheme_price_history = {}\n\n\n\nfor theme, company_list in GLOBAL_THEMES.items():\n\n    valid_tickers = [\n\n        company_to_ticker[c]\n\n        for c in company_list\n\n        if c in company_to_ticker and company_to_ticker[c] in close.columns\n\n    ]\n\n\n\n    if not valid_tickers:\n\n        continue\n\n\n\n    temp = close[valid_tickers].copy()\n\n    normalized = temp.copy()\n\n\n\n    for col in normalized.columns:\n\n        s = normalized[col].dropna()\n\n        if len(s) > 0:\n\n            normalized[col] = normalized[col] / s.iloc[0] * 100\n\n\n\n    theme_series = normalized.mean(axis=1)\n\n    theme_price_history[theme] = theme_series\n\n\n\ntheme_index_df = pd.DataFrame(theme_price_history)\n\ntheme_index_20 = theme_index_df.tail(20)\n\n\n\nif len(theme_index_20) > 0:\n\n    theme_index_20 = theme_index_20 / theme_index_20.iloc[0] * 100\n\n\n\n# ============================================================\n\n# 16. CHART - TOP THEMES 20-DAY TREND\n\n# ============================================================\n\n\n\ntop_themes = theme_df.head(6)["Theme"].tolist()\n\navailable_top_themes = [t for t in top_themes if t in theme_index_20.columns]\n\n\n\nif available_top_themes:\n\n    plt.figure(figsize=(13, 8))\n\n\n\n    for theme in available_top_themes:\n\n        plt.plot(\n\n            theme_index_20.index,\n\n            theme_index_20[theme],\n\n            label=theme,\n\n            linewidth=2\n\n        )\n\n\n\n    plt.axhline(100)\n\n    plt.title("Top Themes - 20 Trading Day Relative Trend")\n\n    plt.ylabel("Normalized Index (Start = 100)")\n\n    plt.legend()\n\n    plt.grid(alpha=0.25)\n\n    plt.xticks(rotation=45)\n\n    plt.tight_layout()\n\n    plt.show()\n\n\n\n# ============================================================\n\n# 17. THEME DETAIL TABLES\n\n# ============================================================\n\n\n\nfor theme in theme_df["Theme"]:\n\n    companies = GLOBAL_THEMES.get(theme, [])\n\n\n\n    temp = (\n\n        stock_df[stock_df["Company"].isin(companies)]\n\n        .sort_values("Daily %", ascending=False)\n\n    )\n\n\n\n    if temp.empty:\n\n        continue\n\n\n\n    print("\\n" + "=" * 90)\n\n    print(f"THEME DETAIL: {theme}")\n\n    print("=" * 90)\n\n\n\n    korea_names = KOREA_WATCHLIST.get(theme, "")\n\n    if korea_names:\n\n        print(f"Korea Watchlist: {korea_names}")\n\n\n\n    display(\n\n        temp[\n\n            ["Country", "Company", "Daily %", "5D %", "20D %"]\n\n        ].round(2)\n\n    )\n\n\n\n# ============================================================\n\n# 18. AUTOMATIC MARKET SUMMARY\n\n# ============================================================\n\n\n\nprint("\\n" + "=" * 90)\n\nprint("AUTOMATIC MARKET SUMMARY")\n\nprint("=" * 90)\n\n\n\ntop3 = theme_df.head(3)\n\n\n\nfor _, row in top3.iterrows():\n\n    print(\n\n        f"\\n{row[\'Theme\']}\\n"\n\n        f"  Daily Avg : {row[\'Daily Avg %\']:+.2f}%\\n"\n\n        f"  5D Avg    : {row[\'5D Avg %\']:+.2f}%\\n"\n\n        f"  20D Avg   : {row[\'20D Avg %\']:+.2f}%\\n"\n\n        f"  Breadth   : {row[\'Breadth %\']:.1f}%\\n"\n\n        f"  Strength  : {row[\'Strength Score\']:+.2f}\\n"\n\n        f"  Korea     : {row[\'Korea Watchlist\']}"\n\n    )\n\n\n\n# ============================================================\n\n# 19. SIGNAL BOARD\n\n# ============================================================\n\n\n\n# Priority order is applied by overwriting NEUTRAL in sequence.\n\n# NEW ROTATION? = strong daily move but weak recent trend\n\n# HOT = broad-based strength with short-term momentum\n\n# STRONG TREND = sustained 5D + 20D momentum\n\n\n\ntheme_df["Signal"] = "NEUTRAL"\n\n\n\ntheme_df.loc[\n\n    (theme_df["Daily Avg %"] > 1.5) &\n\n    (theme_df["5D Avg %"] <= 0),\n\n    "Signal"\n\n] = "NEW ROTATION?"\n\n\n\ntheme_df.loc[\n\n    (theme_df["Daily Avg %"] > 1.0) &\n\n    (theme_df["5D Avg %"] > 2.0) &\n\n    (theme_df["Breadth %"] >= 70),\n\n    "Signal"\n\n] = "HOT"\n\n\n\ntheme_df.loc[\n\n    (theme_df["5D Avg %"] > 3.0) &\n\n    (theme_df["20D Avg %"] > 5.0),\n\n    "Signal"\n\n] = "STRONG TREND"\n\n\n\nprint("\\n" + "=" * 90)\n\nprint("SIGNAL BOARD")\n\nprint("=" * 90)\n\n\n\ndisplay(\n\n    theme_df[\n\n        [\n\n            "Theme",\n\n            "Signal",\n\n            "Daily Avg %",\n\n            "5D Avg %",\n\n            "20D Avg %",\n\n            "Breadth %",\n\n            "Strength Score",\n\n            "Korea Watchlist",\n\n        ]\n\n    ].round(2)\n\n)\n\n\n\n# ============================================================\n\n# 20. OPTIONAL EXCEL EXPORT\n\n# ============================================================\n\n\n\nEXPORT_EXCEL = False\n\n\n\nif EXPORT_EXCEL:\n\n    filename = "japan_taiwan_market_monitor.xlsx"\n\n\n\n    with pd.ExcelWriter(filename, engine="openpyxl") as writer:\n\n        theme_df.to_excel(writer, sheet_name="Global_Themes", index=False)\n\n        sector_df.to_excel(writer, sheet_name="Country_Sectors", index=False)\n\n        stock_df.sort_values("Daily %", ascending=False).to_excel(\n\n            writer, sheet_name="Stocks", index=False\n\n        )\n\n        theme_index_20.to_excel(writer, sheet_name="Theme_20D_Trend")\n\n\n\n    print(f"\\nExcel saved: {filename}")\n\n\n\n# ============================================================\n\n# END\n\n# ============================================================\n\n\n\nprint("\\nDone.")'
+
+
 # ============================================================
 # v11.4: 원본 Google Colab 출력 순서를 그대로 보존하는 공통 실행기
 # - print / display / plt.show 순서를 event로 저장
@@ -1242,6 +1245,10 @@ def render_colab_result(result):
 # 세 분석은 원본 Colab source를 거의 그대로 실행하고 출력 순서까지 저장한다.
 def run_ai():
     return run_colab_source(AI_SRC)
+
+
+def run_jp_tw_market():
+    return run_colab_source(JP_TW_MARKET_SRC)
 
 
 def run_rotation():
@@ -1533,6 +1540,7 @@ NAV_GROUPS = {
     ],
     "반도체 데이터 점검": [
         "AI하드웨어 주가 모멘텀 점검",
+        "일본과 대만 시세점검",
         "대만 월별 매출",
     ],
     "주도주·업종": [
@@ -1547,7 +1555,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.20")
+    st.caption("Market Dashboard · LIVE v11.26")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -1634,6 +1642,10 @@ PAGE_GUIDES = {
         "why": "AI 하드웨어 뉴스가 좋아도 실제 주가 상승이 일부 종목에만 몰리면 추세의 질은 약할 수 있습니다. GPU·메모리·장비·네트워크 등 AI 하드웨어 밸류체인의 Breadth와 모멘텀을 함께 보면 상승이 넓게 퍼지는지 확인할 수 있습니다.",
         "check": "원본 Colab 결과의 기간별 상승·하락 종목 수, Breadth Score, 기울기, 60일 상승종목 비율, 신고가·AI Tech Index 다이버전스를 순서대로 봅니다. 지수는 오르는데 Breadth가 약해지면 쏠림 상승 가능성을 점검합니다.",
     },
+    "일본과 대만 시세점검": {
+        "why": "한국 반도체·AI 공급망은 일본 장비·소재와 대만 파운드리·기판·서버 주가 흐름의 영향을 함께 받습니다. 일본과 대만의 핵심 기업들을 묶어 보면 글로벌 공급망에서 어느 테마로 자금이 이동하는지 빠르게 확인할 수 있습니다.",
+        "check": "일간·5일·20일 수익률, 상승 종목 비율(Breadth), 국가·업종별 Strength Score와 글로벌 테마 순위를 함께 봅니다. 하루 급등만 보지 말고 5일·20일 추세와 Breadth가 동시에 강해지는 테마를 우선 확인합니다.",
+    },
     "대만 월별 매출": {
         "why": "대만은 TSMC를 비롯해 파운드리·ASIC·PCB·CCL·서버 등 AI 공급망 핵심 기업들이 월매출을 공시합니다. 분기 실적을 기다리기 전에 공급망의 실제 매출 방향을 월 단위로 확인할 수 있습니다.",
         "check": "개별 기업의 전년동월비(YoY)와 전월비(MoM), 그리고 같은 밸류체인 안에서 여러 회사가 동시에 개선되는지를 봅니다. 한 회사보다 공급망 전체의 동시 개선이 더 중요한 신호입니다.",
@@ -1661,7 +1673,7 @@ if _guide:
     st.caption("※ 하나의 지표만으로 매수·매도를 결정하기보다, 서로 다른 데이터가 같은 방향을 가리키는지 확인하는 점검용 화면입니다.")
 
 # 수동 업데이트 전용 상태
-for _k in ["liq","fg","canary","trend","rotation","ai","us_sector","kr_sector"]:
+for _k in ["liq","fg","canary","trend","rotation","ai","jp_tw_market","us_sector","kr_sector"]:
     st.session_state.setdefault(_k+"_result", None)
     st.session_state.setdefault(_k+"_updated", None)
 
@@ -1723,7 +1735,7 @@ TW_AI_UNIVERSE = {
     },
     "PCB / 기판": {
         "3037":"Unimicron", "3189":"Kinsus", "8046":"Nan Ya PCB", "4958":"Zhen Ding",
-        "2313":"Compeq", "2367":"Unitech PCB",
+        "2313":"Compeq", "2367":"Unitech PCB", "8021":"Topoint",
     },
     "CCL·동박": {
         "2383":"Elite Material", "6213":"ITEQ", "6274":"TUC", "8358":"Co-Tech",
@@ -2579,10 +2591,10 @@ def render_korea_fear_greed_result(r):
 # 안전한 세션 상태 초기화: 배포/재시작/기존 브라우저 세션에서도 KeyError 방지
 _SAFE_STATE_DEFAULTS = {
     "liq_result": None, "fg_result": None, "canary_result": None, "trend_result": None,
-    "rotation_result": None, "ai_result": None, "us_sector_result": None, "kr_sector_result": None, "kr_fg_result": None,
+    "rotation_result": None, "ai_result": None, "jp_tw_market_result": None, "us_sector_result": None, "kr_sector_result": None, "kr_fg_result": None,
     "tw_revenue_result": None,
     "liq_updated": None, "fg_updated": None, "canary_updated": None, "trend_updated": None,
-    "rotation_updated": None, "ai_updated": None, "us_sector_updated": None, "kr_sector_updated": None, "kr_fg_updated": None,
+    "rotation_updated": None, "ai_updated": None, "jp_tw_market_updated": None, "us_sector_updated": None, "kr_sector_updated": None, "kr_fg_updated": None,
     "tw_revenue_updated": None,
 }
 for _k, _v in _SAFE_STATE_DEFAULTS.items():
@@ -2595,6 +2607,7 @@ PAGE_STORAGE_KEY = {
     "미국 위험신호": "canary",
     "한국 피어앤그리드 오실레이터": "kr_fg",
     "AI하드웨어 주가 모멘텀 점검": "ai",
+    "일본과 대만 시세점검": "jp_tw_market",
     "대만 월별 매출": "tw_revenue",
     "미국 52주 신고가 전략 점검": "rotation",
     "미국 ETF 소라티노 및 상대강도": "us_sector",
@@ -2696,6 +2709,37 @@ if ACTIVE_PAGE == "AI하드웨어 주가 모멘텀 점검":
         render_colab_result(r)
     else:
         st.error("AI하드웨어 주가 모멘텀 계산 오류")
+        render_colab_result(r)
+
+
+# ============================================================
+# 일본 + 대만 시세점검
+# ============================================================
+if ACTIVE_PAGE == "일본과 대만 시세점검":
+    st.subheader("일본과 대만 시세점검")
+    st.caption("일본·대만 핵심 반도체/AI 공급망 종목 · 일간/5일/20일 수익률 · Breadth · 글로벌 테마 Strength Score")
+    st.caption("원본 Google Colab의 print → 표 → 그래프 출력 순서를 그대로 표시합니다. 방문자는 저장된 마지막 결과만 조회합니다.")
+    updated_caption("jp_tw_market")
+    if IS_ADMIN:
+        st.warning("관리자 전용 업데이트입니다. Yahoo Finance에서 일본·대만 시세를 받아 계산합니다.")
+        if st.button("🔄 일본·대만 시세 최신 데이터 업데이트", key="upd_jp_tw_market"):
+            with st.spinner("일본·대만 핵심 종목 시세와 테마 강도를 계산 중입니다..."):
+                time.sleep(2)
+                st.session_state.jp_tw_market_result = run_jp_tw_market()
+                if st.session_state.jp_tw_market_result[0]:
+                    st.session_state.jp_tw_market_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    persist_current_result("jp_tw_market")
+                    st.success("업데이트 완료. Colab 출력 순서와 그래프 좌표를 압축 저장했습니다.")
+    else:
+        st.caption("최신 저장 결과를 조회하는 화면입니다. 방문자 접속으로 Yahoo 데이터를 다시 받지 않습니다.")
+
+    r = st.session_state.jp_tw_market_result
+    if r is None:
+        st.info("저장된 결과가 없습니다. 관리자가 한 번 업데이트하면 이후 저장 결과를 표시합니다.")
+    elif r[0]:
+        render_colab_result(r)
+    else:
+        st.error("일본·대만 시세점검 계산 오류")
         render_colab_result(r)
 
 
