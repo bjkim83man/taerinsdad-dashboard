@@ -561,6 +561,41 @@ div[data-testid="stCode"] pre{
 }
 
 
+
+/* v11.33 월단위 최종신호: Colab처럼 줄바꿈을 강제 보존 */
+.td-monthly-signal-pre{
+  display:block;
+  width:100%;
+  box-sizing:border-box;
+  margin:8px 0 24px 0;
+  padding:16px 18px;
+  border-radius:12px;
+  background:#091322;
+  border:1px solid #263a5e;
+  color:#e9f0fb !important;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:.90rem;
+  line-height:1.58;
+  white-space:pre-wrap !important;
+  word-break:normal;
+  overflow-wrap:anywhere;
+  overflow-x:auto;
+}
+.td-monthly-signal-pre.confirmed{
+  border-left:5px solid #4f9cff;
+}
+.td-monthly-signal-pre.preview{
+  border-left:5px solid #f2b84b;
+}
+@media (max-width:768px){
+  .td-monthly-signal-pre{
+    padding:13px 12px;
+    font-size:.77rem;
+    line-height:1.52;
+    white-space:pre-wrap !important;
+  }
+}
+
 /* 월단위 리밸런싱: 확정/임시 신호 2개를 줄 단위로 또렷하게 표시 */
 .td-monthly-panel{
   margin:14px 0 22px 0;
@@ -1720,7 +1755,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.32")
+    st.caption("Market Dashboard · LIVE v11.33")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -3035,7 +3070,7 @@ if ACTIVE_PAGE == "대만 월별 매출":
 
 
 # ============================================================
-# v11.32 월단위 전략 핵심 요약 · 확정/임시 2개 결과 고정 + 가독성 개선
+# v11.33 월단위 전략 핵심 요약 · 확정/임시 2개 결과 + Colab 줄바꿈 + 코멘트 유지
 # ============================================================
 def _month_label(period):
     try:
@@ -3378,27 +3413,39 @@ def render_monthly_strategy_highlights(result, market):
     latest = pair["latest_data_date"]
     current_period, next_period = pair["current_period"], pair["next_period"]
 
-    _render_monthly_signal_panel(
+    import html as _html
+
+    # 1) 이번달 실제 운용 확정 신호
+    st.markdown(f"### ✅ {_month_label(current_period)} 실제 운용 포지션 · 확정")
+    st.caption(
+        f"직전 월말에 확정되어 이번 달 한 달 동안 실제 운용 기준으로 보는 신호입니다. "
+        f"신호일 {_fmt_signal_date(cur.get('Signal_Date'))} → "
+        f"적용일 {_fmt_signal_date(cur.get('Effective_Date'))}"
+    )
+    current_text = _monthly_console_text(
         cur,
         market,
-        f"{_month_label(current_period)} 한 달 실제 운용 포지션",
-        (
-            f"직전 월말 신호가 실제 적용된 확정 포지션 · "
-            f"신호일 {_fmt_signal_date(cur.get('Signal_Date'))} → "
-            f"적용일 {_fmt_signal_date(cur.get('Effective_Date'))}"
-        ),
-        status="confirmed",
+        f"{_month_label(current_period)} 실제 운용 포지션 · 확정",
+    )
+    st.markdown(
+        f'<pre class="td-monthly-signal-pre confirmed">{_html.escape(current_text)}</pre>',
+        unsafe_allow_html=True,
     )
 
-    _render_monthly_signal_panel(
+    # 2) 다음달 예상 임시 신호
+    st.markdown(f"### 🟡 {_month_label(next_period)} 예상 포지션 · 임시 체크")
+    st.caption(
+        f"{latest.strftime('%Y-%m-%d')} 현재까지의 데이터를 월말로 가정해 미리 계산한 신호입니다. "
+        "아직 Effective_Date가 NaT이므로 실제 매매 신호가 아니며 월말 전까지 바뀔 수 있습니다."
+    )
+    preview_text = _monthly_console_text(
         pre,
         market,
-        f"{_month_label(next_period)} 예상 포지션",
-        (
-            f"{latest.strftime('%Y-%m-%d')} 현재까지의 데이터를 월말로 가정한 임시 신호 · "
-            "Effective_Date = NaT · 실제 월말 전까지 변경 가능"
-        ),
-        status="preview",
+        f"{_month_label(next_period)} 예상 포지션 · 임시 체크",
+    )
+    st.markdown(
+        f'<pre class="td-monthly-signal-pre preview">{_html.escape(preview_text)}</pre>',
+        unsafe_allow_html=True,
     )
 
     if market == "KR":
