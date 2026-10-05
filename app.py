@@ -560,6 +560,73 @@ div[data-testid="stCode"] pre{
   overflow-x:auto !important;
 }
 
+
+/* 월단위 리밸런싱: 확정/임시 신호 2개를 줄 단위로 또렷하게 표시 */
+.td-monthly-panel{
+  margin:14px 0 22px 0;
+  padding:18px 18px 14px 18px;
+  background:#0b1628;
+  border:1px solid #2b3d5e;
+  border-radius:14px;
+}
+.td-monthly-panel.confirmed{border-left:5px solid #4f9cff;}
+.td-monthly-panel.preview{border-left:5px solid #f2b84b;}
+.td-monthly-head{margin-bottom:12px;}
+.td-monthly-badge{
+  display:inline-block;
+  font-size:.80rem;
+  font-weight:800;
+  letter-spacing:.02em;
+  padding:4px 8px;
+  border-radius:999px;
+  margin-bottom:7px;
+  background:#16263f;
+  color:#f3f7ff;
+}
+.td-monthly-title{
+  font-size:1.18rem;
+  line-height:1.35;
+  font-weight:800;
+  color:#ffffff;
+  margin-bottom:4px;
+}
+.td-monthly-sub{
+  font-size:.88rem;
+  line-height:1.45;
+  color:#aebbd0;
+}
+.td-monthly-grid{
+  display:grid;
+  grid-template-columns:minmax(160px, 235px) minmax(0, 1fr);
+  border-top:1px solid rgba(160,180,210,.16);
+}
+.td-monthly-row{display:contents;}
+.td-monthly-label,
+.td-monthly-value{
+  padding:8px 10px;
+  border-bottom:1px solid rgba(160,180,210,.12);
+  line-height:1.45;
+}
+.td-monthly-label{
+  color:#9fb0ca;
+  font-weight:700;
+}
+.td-monthly-value{
+  color:#f7f9fd;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  white-space:normal;
+  overflow-wrap:anywhere;
+  font-weight:650;
+}
+@media (max-width:768px){
+  .td-monthly-panel{padding:14px 12px 10px 12px;}
+  .td-monthly-grid{grid-template-columns:1fr;}
+  .td-monthly-row{display:block;border-bottom:1px solid rgba(160,180,210,.12);padding:7px 2px;}
+  .td-monthly-label,.td-monthly-value{display:block;border:0;padding:2px 6px;}
+  .td-monthly-label{font-size:.80rem;}
+  .td-monthly-value{font-size:.91rem;}
+}
+
 [data-testid="stFileUploader"] section{
   background:#0d1628 !important;
   border:1px solid var(--td-border) !important;
@@ -1653,7 +1720,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.31")
+    st.caption("Market Dashboard · LIVE v11.32")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -2968,7 +3035,7 @@ if ACTIVE_PAGE == "대만 월별 매출":
 
 
 # ============================================================
-# v11.31 월단위 전략 핵심 요약 · 확정/임시 자동 판별 + Colab 출력형
+# v11.32 월단위 전략 핵심 요약 · 확정/임시 2개 결과 고정 + 가독성 개선
 # ============================================================
 def _month_label(period):
     try:
@@ -3171,6 +3238,136 @@ def _monthly_console_text(row, market, title):
     return "\n".join(out)
 
 
+
+def _monthly_signal_rows(row, market):
+    """확정/임시 신호를 화면에서 한 줄씩 또렷하게 보여줄 행 목록."""
+    if market == "KR":
+        nt_base = row.get("NonTrend_Base_Exposure", np.nan)
+        return [
+            ("신호일", _fmt_signal_date(row.get("Signal_Date"))),
+            ("다음 적용일", _fmt_signal_date(row.get("Effective_Date"))),
+            ("현재 상태", _fmt_raw_text(row.get("Mode"))),
+            ("Breadth", _fmt_pct(row.get("Breadth"), 2)),
+            ("KOSPI 252일 DD", _fmt_pct(row.get("KOSPI_DD_252"), 2)),
+            ("기본 KOSPI 비중", _fmt_pct(row.get("Base_KOSPI_Exposure"), 0)),
+            ("최종 투자비중", _fmt_pct(row.get("Final_Exposure"), 0)),
+            ("현금비중", _fmt_pct(row.get("Cash_Exposure"), 0)),
+            ("F&G Index", _fmt_num(row.get("FG_Index"), 2)),
+            ("F&G Oscillator", _fmt_num(row.get("FG_Oscillator"), 4)),
+            ("F&G Signal", _fmt_num(row.get("FG_Signal"), 4)),
+            ("F&G Histogram", _fmt_num(row.get("FG_Histogram"), 4)),
+            ("과매도 확대 신호", str(bool(row.get("FG_Oversold_Rebound", False)))),
+            ("KOSPI MA200", _fmt_num(row.get("KOSPI_MA200"), 2)),
+            ("KOSPI 6M 모멘텀", _fmt_pct(row.get("KOSPI_AbsMomentum_6M"), 2)),
+            ("비추세 기본비중", _fmt_pct(nt_base, 0) if pd.notna(nt_base) else "-"),
+            ("비추세 상태", _fmt_raw_text(row.get("NonTrend_Regime")) or "-"),
+            ("투자 대상", _fmt_raw_text(row.get("Current_Holdings")) or "-"),
+            ("회복 후보", _fmt_raw_text(row.get("Recovery_Candidates")) or "-"),
+            ("Top3", _fmt_raw_text(row.get("Top3")) or "-"),
+            ("Top5", _fmt_raw_text(row.get("Top5")) or "-"),
+        ]
+    return [
+        ("신호일", _fmt_signal_date(row.get("Signal_Date"))),
+        ("다음 거래일 종가 체결일", _fmt_signal_date(row.get("Effective_Date"))),
+        ("모드", _fmt_raw_text(row.get("Mode"))),
+        ("Breadth", _fmt_pct(row.get("Breadth"), 2)),
+        ("NASDAQ/S&P RS 6M", _fmt_pct(row.get("NASDAQ_SP500_RS6M"), 2, True)),
+        ("NASDAQ 강세", str(bool(row.get("NASDAQ_Strong", False)))),
+        ("최종 투자비중", _fmt_pct(row.get("Final_Exposure"), 0)),
+        ("현금비중", _fmt_pct(row.get("Cash_Exposure"), 0)),
+        ("선택", _fmt_raw_text(row.get("Selected")) or "-"),
+        ("3M RS Top2", _fmt_raw_text(row.get("RS3M_Top2")) or "-"),
+        ("6M RS Top3", _fmt_raw_text(row.get("RS6M_Top3")) or "-"),
+        ("비추세 Rank Momentum Top3", _fmt_raw_text(row.get("NonTrend_Rank6M_Skip1M_Top3")) or "-"),
+    ]
+
+
+def _render_monthly_signal_panel(row, market, title, subtitle, status="confirmed"):
+    """st.code 대신 각 항목을 별도 줄로 렌더링해 모바일/PC 모두 줄바꿈을 보장."""
+    import html as _html
+    rows = _monthly_signal_rows(row, market)
+    status_text = "이번달 실제 운용 · 확정" if status == "confirmed" else "다음달 예상 · 임시"
+    status_class = "confirmed" if status == "confirmed" else "preview"
+
+    row_html = "".join(
+        f'<div class="td-monthly-row">'
+        f'<div class="td-monthly-label">{_html.escape(str(k))}</div>'
+        f'<div class="td-monthly-value">{_html.escape(str(v))}</div>'
+        f'</div>'
+        for k, v in rows
+    )
+
+    st.markdown(
+        f"""
+        <div class="td-monthly-panel {status_class}">
+          <div class="td-monthly-head">
+            <div>
+              <div class="td-monthly-badge">{_html.escape(status_text)}</div>
+              <div class="td-monthly-title">{_html.escape(title)}</div>
+              <div class="td-monthly-sub">{_html.escape(subtitle)}</div>
+            </div>
+          </div>
+          <div class="td-monthly-grid">{row_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_monthly_colab_result(result, market):
+    """
+    기존 표·그래프는 그대로 보여주되, 원본 Colab의 '현재 최종 신호' 텍스트는 숨긴다.
+    최종 신호는 위의 '이번달 확정 / 다음달 임시' 2개 패널에서 이미 각각 표시한다.
+    """
+    if result is None:
+        return
+    try:
+        ok, payload, txt, shown, figs = result
+    except Exception:
+        st.error("저장 결과 형식을 읽을 수 없습니다.")
+        return
+
+    if not isinstance(payload, dict) or payload.get("colab_events") is None:
+        # 이전 저장형식 fallback
+        render_colab_result(result)
+        return
+
+    events = payload.get("colab_events") or []
+    import html as _html
+
+    st.markdown("""
+    <style>
+    .colab-output{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;line-height:1.48;
+      background:transparent;border:0;padding:2px 0 8px 0;margin:0;color:inherit;font-size:.92rem}
+    .colab-table-wrap{overflow-x:auto;margin:4px 0 18px 0}
+    table.colab-static-table{border-collapse:collapse;font-size:.88rem;white-space:nowrap;background:transparent}
+    table.colab-static-table th,table.colab-static-table td{border:1px solid rgba(128,128,128,.28);padding:5px 8px;text-align:right}
+    table.colab-static-table th{font-weight:700;background:rgba(128,128,128,.08)}
+    </style>
+    """, unsafe_allow_html=True)
+
+    for ev in events:
+        typ = ev.get("type") if isinstance(ev, dict) else None
+        if typ == "text":
+            t = ev.get("text", "")
+            if not t.strip():
+                continue
+            # 국내/미국 원본의 '최신 한 건만' 출력하는 최종신호 블록은 중복/혼동되므로 숨김
+            if market == "KR" and "현재 최종 V2.3 신호" in t:
+                continue
+            if market == "US" and "현재 최종 신호" in t:
+                continue
+            st.markdown(f'<pre class="colab-output">{_html.escape(t)}</pre>', unsafe_allow_html=True)
+        elif typ == "table":
+            _render_static_df(ev.get("data"))
+        elif typ == "html":
+            h = ev.get("html", "")
+            if h:
+                st.markdown(f'<div class="colab-table-wrap">{h}</div>', unsafe_allow_html=True)
+        elif typ == "figure":
+            _render_saved_fig(ev.get("figure"))
+
+
 def render_monthly_strategy_highlights(result, market):
     pair = _monthly_signal_pair(result)
     if pair is None:
@@ -3181,38 +3378,27 @@ def render_monthly_strategy_highlights(result, market):
     latest = pair["latest_data_date"]
     current_period, next_period = pair["current_period"], pair["next_period"]
 
-    st.markdown("### ✅ 이번달 실제 운용 · 확정")
-    st.success(
-        f"{_month_label(current_period)}에는 아래 확정 신호를 한 달 동안 실제 운용 기준으로 봅니다. "
-        f"신호일 {_fmt_signal_date(cur.get('Signal_Date'))} → 적용일 {_fmt_signal_date(cur.get('Effective_Date'))}"
-    )
-    st.caption(
-        "행 번호는 사용하지 않습니다. Effective_Date가 실제 날짜로 존재하고 이미 적용된 가장 최근 신호를 자동으로 '이번달 확정'으로 판별합니다."
-    )
-    st.code(
-        _monthly_console_text(
-            cur,
-            market,
-            f"{_month_label(current_period)} 실제 운용 · 확정 신호",
+    _render_monthly_signal_panel(
+        cur,
+        market,
+        f"{_month_label(current_period)} 한 달 실제 운용 포지션",
+        (
+            f"직전 월말 신호가 실제 적용된 확정 포지션 · "
+            f"신호일 {_fmt_signal_date(cur.get('Signal_Date'))} → "
+            f"적용일 {_fmt_signal_date(cur.get('Effective_Date'))}"
         ),
-        language="text",
+        status="confirmed",
     )
 
-    st.markdown("### 🟡 다음달 포지션 · 임시 체크")
-    st.warning(
-        f"{latest.strftime('%Y-%m-%d')} 현재까지의 데이터를 월말이라고 가정해 계산한 {_month_label(next_period)} 예상 신호입니다. "
-        "Effective_Date가 NaT인 최신 신호이므로 아직 실제 매매 신호가 아닙니다."
-    )
-    st.caption(
-        "월말까지 Breadth·RS·낙폭·F&G 등이 변하면 이 임시 신호도 바뀝니다. 실제 적용은 월말 확정 후 다음 거래일 기준입니다."
-    )
-    st.code(
-        _monthly_console_text(
-            pre,
-            market,
-            f"{_month_label(next_period)} 예상 · 임시 체크 신호",
+    _render_monthly_signal_panel(
+        pre,
+        market,
+        f"{_month_label(next_period)} 예상 포지션",
+        (
+            f"{latest.strftime('%Y-%m-%d')} 현재까지의 데이터를 월말로 가정한 임시 신호 · "
+            "Effective_Date = NaT · 실제 월말 전까지 변경 가능"
         ),
-        language="text",
+        status="preview",
     )
 
     if market == "KR":
@@ -3342,7 +3528,8 @@ if ACTIVE_PAGE == "국내시장 월단위 리밸런싱 투자전략":
         render_monthly_strategy_highlights(r, "KR")
         st.markdown("---")
         st.markdown("### 원본 전략 표·그래프")
-        render_colab_result(r)
+        st.caption("최근 신호 표와 기존 그래프는 그대로 표시합니다. 원본의 '현재 최종 신호 1건' 출력은 위의 확정/임시 2개 결과와 중복되어 숨겼습니다.")
+        render_monthly_colab_result(r, "KR")
     else:
         st.error("국내 월단위 리밸런싱 전략 계산 오류")
         render_colab_result(r)
@@ -3395,7 +3582,8 @@ if ACTIVE_PAGE == "미국시장 월단위 리밸런싱 투자전략":
         render_monthly_strategy_highlights(r, "US")
         st.markdown("---")
         st.markdown("### 원본 전략 표·그래프")
-        render_colab_result(r)
+        st.caption("최근 신호 표와 기존 그래프는 그대로 표시합니다. 원본의 '현재 최종 신호 1건' 출력은 위의 확정/임시 2개 결과와 중복되어 숨겼습니다.")
+        render_monthly_colab_result(r, "US")
     else:
         st.error("미국 월단위 리밸런싱 전략 계산 오류")
         render_colab_result(r)
