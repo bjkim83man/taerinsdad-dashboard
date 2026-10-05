@@ -1116,7 +1116,14 @@ def run_korea_sector(excel_bytes):
         tb = traceback.format_exc()
         diagnostics.write("\n" + tb)
         _append_text("\n❌ 계산 오류\n" + tb)
-        return False, {"colab_events": events}, diagnostics.getvalue()[-20000:], [], []
+        payload = {"colab_events": events}
+        if capture_names:
+            for name in capture_names:
+                if name in ns:
+                    safe_value = _storage_safe(ns[name])
+                    if safe_value is not None:
+                        payload[name] = safe_value
+        return False, payload, diagnostics.getvalue()[-20000:], [], []
     finally:
         plt.show = old_show
         plt.close("all")
@@ -1242,6 +1249,17 @@ def run_colab_source(source, figure_mode="chartdata", extra_ns=None, capture_nam
         if extra.strip():
             _append_text(extra)
         payload = {"colab_events": events, "event_count": len(events)}
+
+        # 요청한 계산 결과(namespace)를 실제 payload에 함께 저장한다.
+        # 월단위 전략에서는 dashboard_monthly_summary를 캡처하여
+        # 이번달 확정 / 다음달 임시 신호 2개를 대시보드에서 판별하는 데 사용한다.
+        if capture_names:
+            for name in capture_names:
+                if name in ns:
+                    safe_value = _storage_safe(ns[name])
+                    if safe_value is not None:
+                        payload[name] = safe_value
+
         return True, payload, diagnostics.getvalue()[-12000:], [], []
     except Exception:
         tb = traceback.format_exc()
@@ -1755,7 +1773,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.33")
+    st.caption("Market Dashboard · LIVE v11.34")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -3070,7 +3088,7 @@ if ACTIVE_PAGE == "대만 월별 매출":
 
 
 # ============================================================
-# v11.33 월단위 전략 핵심 요약 · 확정/임시 2개 결과 + Colab 줄바꿈 + 코멘트 유지
+# v11.34 월단위 전략 핵심 요약 · capture_names 저장 누락 수정
 # ============================================================
 def _month_label(period):
     try:
@@ -3406,7 +3424,7 @@ def render_monthly_colab_result(result, market):
 def render_monthly_strategy_highlights(result, market):
     pair = _monthly_signal_pair(result)
     if pair is None:
-        st.info("이번달/다음달 요약은 새 저장 형식에서 표시됩니다. 관리자가 최신 Excel로 한 번 다시 계산해주세요.")
+        st.info("이번달/다음달 신호 데이터가 저장되지 않은 이전 결과입니다. 관리자에서 최신 Excel로 한 번 다시 계산·저장해주세요.")
         return
 
     cur, pre = pair["current"], pair["preview"]
