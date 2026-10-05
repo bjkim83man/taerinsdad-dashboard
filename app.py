@@ -1653,7 +1653,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.28")
+    st.caption("Market Dashboard · LIVE v11.31")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -2968,7 +2968,7 @@ if ACTIVE_PAGE == "대만 월별 매출":
 
 
 # ============================================================
-# v11.29 월단위 전략 핵심 요약
+# v11.31 월단위 전략 핵심 요약 · 확정/임시 자동 판별 + Colab 출력형
 # ============================================================
 def _month_label(period):
     try:
@@ -3037,26 +3037,64 @@ def _clean_asset_text(v):
 
 
 def _monthly_signal_pair(result):
+    """
+    월단위 전략의 두 신호를 '행 번호'가 아니라 신호의 의미로 구분합니다.
+
+    - current: Effective_Date가 실제 날짜로 존재하고, 최신 데이터일까지 이미 적용된
+      가장 최근 확정 신호 -> 이번달 실제 운용 포지션
+    - preview: 최신 Signal_Date이면서 Effective_Date가 NaT인 신호
+      -> 최신 데이터를 월말로 가정한 다음달 임시 체크 신호
+
+    따라서 국내 104/105, 미국 116/117처럼 DataFrame 행 번호가 계속 바뀌어도
+    자동으로 확정/임시 신호를 판별합니다.
+    """
     try:
         ok, payload, *_ = result
     except Exception:
         return None
-    if not ok or not isinstance(payload, dict): return None
+    if not ok or not isinstance(payload, dict):
+        return None
+
     summary = payload.get("dashboard_monthly_summary")
-    if not isinstance(summary, dict): return None
+    if not isinstance(summary, dict):
+        return None
+
     signals = summary.get("signals")
     latest_data_date = summary.get("latest_data_date")
     if not isinstance(signals, pd.DataFrame) or signals.empty or latest_data_date is None:
         return None
+
     sig = signals.copy()
     sig["Signal_Date"] = pd.to_datetime(sig["Signal_Date"], errors="coerce")
-    sig = sig.dropna(subset=["Signal_Date"]).sort_values("Signal_Date")
-    if sig.empty: return None
+    if "Effective_Date" not in sig.columns:
+        sig["Effective_Date"] = pd.NaT
+    sig["Effective_Date"] = pd.to_datetime(sig["Effective_Date"], errors="coerce")
+    sig = sig.dropna(subset=["Signal_Date"]).sort_values(["Signal_Date", "Effective_Date"], na_position="last")
+    if sig.empty:
+        return None
+
     latest_data_date = pd.Timestamp(latest_data_date)
     latest_period = latest_data_date.to_period("M")
-    preview = sig.iloc[-1]
-    prev = sig[sig["Signal_Date"].dt.to_period("M") < latest_period]
-    current = prev.iloc[-1] if not prev.empty else (sig.iloc[-2] if len(sig) >= 2 else preview)
+
+    # 1) 다음달 미리 체크: 최신 행 중 아직 실제 체결일이 없는 신호를 우선
+    preview_candidates = sig[
+        sig["Effective_Date"].isna()
+        & (sig["Signal_Date"] <= latest_data_date)
+    ]
+    preview = preview_candidates.iloc[-1] if not preview_candidates.empty else sig.iloc[-1]
+
+    # 2) 이번달 실제 운용: 실제 적용일이 있고 최신 데이터일까지 이미 적용된 가장 최근 신호
+    current_candidates = sig[
+        sig["Effective_Date"].notna()
+        & (sig["Effective_Date"] <= latest_data_date)
+    ]
+    if not current_candidates.empty:
+        current = current_candidates.sort_values(["Effective_Date", "Signal_Date"]).iloc[-1]
+    else:
+        # 예외적으로 Effective_Date가 모두 없다면 preview 직전 신호를 사용
+        before_preview = sig[sig["Signal_Date"] < pd.Timestamp(preview["Signal_Date"])]
+        current = before_preview.iloc[-1] if not before_preview.empty else preview
+
     return {
         "latest_data_date": latest_data_date,
         "current_period": latest_period,
@@ -3066,22 +3104,71 @@ def _monthly_signal_pair(result):
     }
 
 
-def _monthly_panel_html(title, subtitle, mode, asset, exposure, cash, accent):
-    import html as _html
-    return f"""
-    <div style="border:1px solid #2a3958;border-radius:16px;padding:17px 18px;background:#101a31;margin:4px 0 10px 0;">
-      <div style="font-size:.83rem;color:#9fb0c7;margin-bottom:6px;">{_html.escape(subtitle)}</div>
-      <div style="font-size:1.15rem;font-weight:800;color:#f5f7fb;margin-bottom:12px;">{_html.escape(title)}</div>
-      <div style="font-size:.82rem;color:#9fb0c7;">상태</div>
-      <div style="font-size:1.18rem;font-weight:800;color:{accent};margin-bottom:9px;">{_html.escape(mode)}</div>
-      <div style="font-size:.82rem;color:#9fb0c7;">투자 대상</div>
-      <div style="font-size:1.15rem;font-weight:800;color:#f5f7fb;margin-bottom:12px;overflow-wrap:anywhere;">{_html.escape(asset)}</div>
-      <div style="display:flex;gap:24px;flex-wrap:wrap;">
-        <div><span style="font-size:.78rem;color:#9fb0c7;">투자비중</span><br><b style="font-size:1.12rem;color:#f5f7fb;">{_html.escape(exposure)}</b></div>
-        <div><span style="font-size:.78rem;color:#9fb0c7;">현금비중</span><br><b style="font-size:1.12rem;color:#f5f7fb;">{_html.escape(cash)}</b></div>
-      </div>
-    </div>
-    """
+def _fmt_signal_date(v):
+    try:
+        if pd.isna(v):
+            return "NaT"
+        return pd.Timestamp(v).strftime("%Y-%m-%d")
+    except Exception:
+        return str(v)
+
+
+def _fmt_raw_text(v, empty=""):
+    try:
+        if pd.isna(v):
+            return empty
+    except Exception:
+        pass
+    txt = "" if v is None else str(v).strip()
+    return txt if txt and txt.lower() not in ("nan", "none") else empty
+
+
+def _monthly_console_text(row, market, title):
+    """원본 Google Colab의 '현재 최종 신호' 출력 형식을 그대로 재현."""
+    line = "=" * (100 if market == "US" else 80)
+    out = [line, title, line]
+
+    if market == "KR":
+        nt_base = row.get("NonTrend_Base_Exposure", np.nan)
+        out += [
+            f"신호일            : {_fmt_signal_date(row.get('Signal_Date'))}",
+            f"다음 적용일       : {_fmt_signal_date(row.get('Effective_Date'))}",
+            f"현재 상태         : {_fmt_raw_text(row.get('Mode'))}",
+            f"Breadth           : {_fmt_pct(row.get('Breadth'), 2)}",
+            f"KOSPI 252일 DD    : {_fmt_pct(row.get('KOSPI_DD_252'), 2)}",
+            f"기본 KOSPI 비중   : {_fmt_pct(row.get('Base_KOSPI_Exposure'), 0)}",
+            f"최종 투자비중     : {_fmt_pct(row.get('Final_Exposure'), 0)}",
+            f"현금비중          : {_fmt_pct(row.get('Cash_Exposure'), 0)}",
+            f"F&G Index         : {_fmt_num(row.get('FG_Index'), 2)}",
+            f"F&G Oscillator    : {_fmt_num(row.get('FG_Oscillator'), 4)}",
+            f"F&G Signal        : {_fmt_num(row.get('FG_Signal'), 4)}",
+            f"F&G Histogram     : {_fmt_num(row.get('FG_Histogram'), 4)}",
+            f"과매도 확대 신호  : {bool(row.get('FG_Oversold_Rebound', False))}",
+            f"KOSPI MA200       : {_fmt_num(row.get('KOSPI_MA200'), 2)}",
+            f"KOSPI 6M 모멘텀   : {_fmt_pct(row.get('KOSPI_AbsMomentum_6M'), 2)}",
+            f"비추세 기본비중   : {_fmt_pct(nt_base, 0) if pd.notna(nt_base) else '-'}",
+            f"비추세 상태       : {_fmt_raw_text(row.get('NonTrend_Regime'))}",
+            f"투자 대상         : {_fmt_raw_text(row.get('Current_Holdings'))}",
+            f"회복 후보         : {_fmt_raw_text(row.get('Recovery_Candidates'))}",
+            f"Top3              : {_fmt_raw_text(row.get('Top3'))}",
+            f"Top5              : {_fmt_raw_text(row.get('Top5'))}",
+        ]
+    else:
+        out += [
+            f"신호일: {_fmt_signal_date(row.get('Signal_Date'))}",
+            f"다음 거래일 종가 체결일: {_fmt_signal_date(row.get('Effective_Date'))}",
+            f"모드: {_fmt_raw_text(row.get('Mode'))}",
+            f"Breadth: {_fmt_pct(row.get('Breadth'), 2)}",
+            f"NASDAQ/S&P RS 6M: {_fmt_pct(row.get('NASDAQ_SP500_RS6M'), 2, True)}",
+            f"NASDAQ 강세: {bool(row.get('NASDAQ_Strong', False))}",
+            f"최종 투자비중: {_fmt_pct(row.get('Final_Exposure'), 0)}",
+            f"현금비중: {_fmt_pct(row.get('Cash_Exposure'), 0)}",
+            f"선택: {_fmt_raw_text(row.get('Selected'))}",
+            f"3M RS Top2: {_fmt_raw_text(row.get('RS3M_Top2'))}",
+            f"6M RS Top3: {_fmt_raw_text(row.get('RS6M_Top3'))}",
+            f"비추세 Rank Momentum Top3: {_fmt_raw_text(row.get('NonTrend_Rank6M_Skip1M_Top3'))}",
+        ]
+    return "\n".join(out)
 
 
 def render_monthly_strategy_highlights(result, market):
@@ -3089,71 +3176,107 @@ def render_monthly_strategy_highlights(result, market):
     if pair is None:
         st.info("이번달/다음달 요약은 새 저장 형식에서 표시됩니다. 관리자가 최신 Excel로 한 번 다시 계산해주세요.")
         return
+
     cur, pre = pair["current"], pair["preview"]
     latest = pair["latest_data_date"]
     current_period, next_period = pair["current_period"], pair["next_period"]
+
+    st.markdown("### ✅ 이번달 실제 운용 · 확정")
+    st.success(
+        f"{_month_label(current_period)}에는 아래 확정 신호를 한 달 동안 실제 운용 기준으로 봅니다. "
+        f"신호일 {_fmt_signal_date(cur.get('Signal_Date'))} → 적용일 {_fmt_signal_date(cur.get('Effective_Date'))}"
+    )
+    st.caption(
+        "행 번호는 사용하지 않습니다. Effective_Date가 실제 날짜로 존재하고 이미 적용된 가장 최근 신호를 자동으로 '이번달 확정'으로 판별합니다."
+    )
+    st.code(
+        _monthly_console_text(
+            cur,
+            market,
+            f"{_month_label(current_period)} 실제 운용 · 확정 신호",
+        ),
+        language="text",
+    )
+
+    st.markdown("### 🟡 다음달 포지션 · 임시 체크")
+    st.warning(
+        f"{latest.strftime('%Y-%m-%d')} 현재까지의 데이터를 월말이라고 가정해 계산한 {_month_label(next_period)} 예상 신호입니다. "
+        "Effective_Date가 NaT인 최신 신호이므로 아직 실제 매매 신호가 아닙니다."
+    )
+    st.caption(
+        "월말까지 Breadth·RS·낙폭·F&G 등이 변하면 이 임시 신호도 바뀝니다. 실제 적용은 월말 확정 후 다음 거래일 기준입니다."
+    )
+    st.code(
+        _monthly_console_text(
+            pre,
+            market,
+            f"{_month_label(next_period)} 예상 · 임시 체크 신호",
+        ),
+        language="text",
+    )
+
     if market == "KR":
         cur_asset = _clean_asset_text(cur.get("Current_Holdings"))
         pre_asset = _clean_asset_text(pre.get("Current_Holdings"))
     else:
         cur_asset = _clean_asset_text(cur.get("Selected"))
         pre_asset = _clean_asset_text(pre.get("Selected"))
-    cur_mode, pre_mode = _mode_korean(cur.get("Mode"), market), _mode_korean(pre.get("Mode"), market)
-    cur_exp = float(cur.get("Final_Exposure", 0) or 0); pre_exp = float(pre.get("Final_Exposure", 0) or 0)
-    cur_cash = float(cur.get("Cash_Exposure", max(0.0,1-cur_exp)) or 0); pre_cash = float(pre.get("Cash_Exposure", max(0.0,1-pre_exp)) or 0)
 
-    st.markdown("### 📌 이번달 투자와 다음달 미리 체크")
-    st.caption("이번달 투자는 직전 월말 확정 신호 기준. 다음달 미리 체크는 최신 데이터일을 가상 월말로 계산한 값이라 실제 월말까지 바뀔 수 있습니다.")
-    c1, c2 = st.columns(2)
-    with c1:
-        eff_txt = ""
-        try:
-            if pd.notna(cur.get("Effective_Date")):
-                eff_txt = f" · 적용 {pd.Timestamp(cur.get('Effective_Date')).strftime('%m/%d')} 종가"
-        except Exception: pass
-        st.markdown(_monthly_panel_html(
-            f"{_month_label(current_period)} 투자 · 확정",
-            f"신호 {pd.Timestamp(cur['Signal_Date']).strftime('%Y-%m-%d')}{eff_txt}",
-            cur_mode, cur_asset, _fmt_pct(cur_exp), _fmt_pct(cur_cash), "#7db8ff"
-        ), unsafe_allow_html=True)
-    with c2:
-        st.markdown(_monthly_panel_html(
-            f"{_month_label(next_period)} 투자 · 미리 체크",
-            f"{latest.strftime('%Y-%m-%d')} 데이터 기준 · 월말 확정 전",
-            pre_mode, pre_asset, _fmt_pct(pre_exp), _fmt_pct(pre_cash), "#7ce7c4"
-        ), unsafe_allow_html=True)
+    cur_exp = float(cur.get("Final_Exposure", 0) or 0)
+    pre_exp = float(pre.get("Final_Exposure", 0) or 0)
+    same = (
+        cur_asset == pre_asset
+        and str(cur.get("Mode")) == str(pre.get("Mode"))
+        and abs(pre_exp - cur_exp) < 1e-9
+    )
 
-    same = cur_asset == pre_asset and str(cur.get("Mode")) == str(pre.get("Mode")) and abs(pre_exp-cur_exp) < 1e-9
-    head = (f"현재 기준으로는 다음달에도 **{pre_asset} {_fmt_pct(pre_exp)}** 유지 예상" if same
-            else f"현재 **{cur_asset} {_fmt_pct(cur_exp)}** → 다음달 미리 체크 **{pre_asset} {_fmt_pct(pre_exp)}**")
+    st.markdown("### 🧭 현재 포지션 → 다음달 예상 포지션 해석")
+    head = (
+        f"현재 데이터 기준으로는 다음달에도 **{pre_asset} {_fmt_pct(pre_exp)}** 유지 예상"
+        if same
+        else f"이번달 **{cur_asset} {_fmt_pct(cur_exp)}** → 다음달 미리 체크 **{pre_asset} {_fmt_pct(pre_exp)}**"
+    )
     lines = [head]
 
     if market == "KR":
-        cb,pb=cur.get("Breadth",np.nan),pre.get("Breadth",np.nan)
-        cdd,pdd=cur.get("KOSPI_DD_252",np.nan),pre.get("KOSPI_DD_252",np.nan)
-        cfg,pfg=cur.get("FG_Index",np.nan),pre.get("FG_Index",np.nan)
-        lines.append(f"Breadth **{_fmt_pct(cb,1)} → {_fmt_pct(pb,1)}**, KOSPI 252일 DD **{_fmt_pct(cdd,1)} → {_fmt_pct(pdd,1)}**, F&G **{_fmt_num(cfg,1)} → {_fmt_num(pfg,1)}**")
-        pmode=str(pre.get("Mode",""))
+        cb, pb = cur.get("Breadth", np.nan), pre.get("Breadth", np.nan)
+        cdd, pdd = cur.get("KOSPI_DD_252", np.nan), pre.get("KOSPI_DD_252", np.nan)
+        cfg, pfg = cur.get("FG_Index", np.nan), pre.get("FG_Index", np.nan)
+        lines.append(
+            f"Breadth **{_fmt_pct(cb,1)} → {_fmt_pct(pb,1)}**, "
+            f"KOSPI 252일 DD **{_fmt_pct(cdd,1)} → {_fmt_pct(pdd,1)}**, "
+            f"F&G **{_fmt_num(cfg,1)} → {_fmt_num(pfg,1)}**"
+        )
+        pmode = str(pre.get("Mode", ""))
         if pmode.startswith("CONTRARIAN_KOSPI"):
-            base=pre.get("Base_KOSPI_Exposure",np.nan); boost=bool(pre.get("FG_Oversold_Rebound",False))
-            lines.append(f"Breadth 30% 미만 **역추세 구간**. 현재 KOSPI 낙폭 단계의 기본비중은 **{_fmt_pct(base)}**, F&G 과매도 확대는 **{'ON' if boost else 'OFF'}**")
-        elif pmode=="TREND":
+            base = pre.get("Base_KOSPI_Exposure", np.nan)
+            boost = bool(pre.get("FG_Oversold_Rebound", False))
+            lines.append(
+                f"Breadth 30% 미만 **역추세 구간**. KOSPI 낙폭 단계의 기본비중은 **{_fmt_pct(base)}**, "
+                f"F&G 과매도 확대 신호는 **{'ON' if boost else 'OFF'}**"
+            )
+        elif pmode == "TREND":
             lines.append("Breadth 60% 이상 **추세 구간**으로 적격 RS 상위 업종 중심 100% 운용")
         elif pmode.startswith("NON_TREND"):
             lines.append("Breadth 40~60% **비추세 구간**으로 Top3 상대모멘텀 강도에 따라 투자비중 조절")
         elif pmode.startswith("RECOVERY"):
             lines.append("Breadth 30~40% **회복 구간**으로 과거 리더의 눌림 후보 여부를 추적")
     else:
-        cb,pb=cur.get("Breadth",np.nan),pre.get("Breadth",np.nan)
-        crs,prs=cur.get("NASDAQ_SP500_RS6M",np.nan),pre.get("NASDAQ_SP500_RS6M",np.nan)
-        lines.append(f"Breadth **{_fmt_pct(cb,1)} → {_fmt_pct(pb,1)}**, NASDAQ/S&P 6M RS **{_fmt_pct(crs,1,True)} → {_fmt_pct(prs,1,True)}**")
-        pmode=str(pre.get("Mode",""))
+        cb, pb = cur.get("Breadth", np.nan), pre.get("Breadth", np.nan)
+        crs, prs = cur.get("NASDAQ_SP500_RS6M", np.nan), pre.get("NASDAQ_SP500_RS6M", np.nan)
+        lines.append(
+            f"Breadth **{_fmt_pct(cb,1)} → {_fmt_pct(pb,1)}**, "
+            f"NASDAQ/S&P 6M RS **{_fmt_pct(crs,1,True)} → {_fmt_pct(prs,1,True)}**"
+        )
+        pmode = str(pre.get("Mode", ""))
         if pmode.startswith("NASDAQ_INTERNAL_TOP1") or pmode.startswith("NASDAQ100_FALLBACK"):
-            cap = "Breadth 30% 미만이라 50% 제한" if pd.notna(pb) and float(pb)<0.30 else "Breadth 30% 이상이라 100% 운용 가능"
-            lines.append(f"NASDAQ 독주 조건은 **{'유지' if bool(pre.get('NASDAQ_Strong',False)) else '해제'}**. 현재 규칙상 {cap}")
+            cap = "Breadth 30% 미만이라 50% 제한" if pd.notna(pb) and float(pb) < 0.30 else "Breadth 30% 이상이라 100% 운용 가능"
+            lines.append(
+                f"NASDAQ 독주 조건은 **{'유지' if bool(pre.get('NASDAQ_Strong', False)) else '해제'}**. 현재 규칙상 {cap}"
+            )
         elif pmode.startswith("SUPER_BULL"):
             lines.append("Breadth 80% 이상 **초광범위 강세**로 S&P500과 NASDAQ100의 1M·3M·6M 평균 모멘텀 비교")
-        elif pmode=="RS3M_TOP2":
+        elif pmode == "RS3M_TOP2":
             lines.append("Breadth 60~80% **선택적 업종 강세**로 3개월 RS Top2 운용")
         elif pmode.startswith("NON_TREND"):
             lines.append("Breadth 40~60% **비추세**로 최근 1개월을 제외한 6개월 Rank Momentum Top3 사용")
@@ -3162,11 +3285,14 @@ def render_monthly_strategy_highlights(result, market):
         elif pmode.startswith("DEEP"):
             lines.append("Breadth 30% 미만 **깊은 약세**로 S&P500 낙폭 단계 또는 금속 Overlay 적용")
 
-    delta=pre_exp-cur_exp
-    if abs(delta)>=0.005:
-        lines.append(f"투자비중은 현재 대비 **{abs(delta):.0%}p {'늘어나는' if delta>0 else '줄어드는'} 방향**")
+    delta = pre_exp - cur_exp
+    if abs(delta) >= 0.005:
+        lines.append(
+            f"투자비중은 이번달 대비 **{abs(delta):.0%}p {'늘어나는' if delta > 0 else '줄어드는'} 방향**"
+        )
+
     st.info("\n\n".join(lines))
-    st.caption("※ 다음달 미리 체크는 오늘까지의 데이터를 월말로 가정한 시뮬레이션. 실제 리밸런싱은 월말 확정 신호를 사용합니다.")
+    st.caption("※ 다음달 미리 체크는 최신 데이터일까지를 월말로 가정한 시뮬레이션이며, 실제 리밸런싱은 월말 확정 신호를 사용합니다.")
 
 
 # ============================================================
