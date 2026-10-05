@@ -556,8 +556,11 @@ div[data-testid="stCode"] span{
   line-height:1.52 !important;
 }
 div[data-testid="stCode"] pre{
-  white-space:pre !important;
+  white-space:pre-wrap !important;
+  overflow-wrap:anywhere !important;
+  word-break:normal !important;
   overflow-x:auto !important;
+  line-height:1.58 !important;
 }
 
 
@@ -1773,7 +1776,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.34")
+    st.caption("Market Dashboard · LIVE v11.35")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -3088,7 +3091,7 @@ if ACTIVE_PAGE == "대만 월별 매출":
 
 
 # ============================================================
-# v11.34 월단위 전략 핵심 요약 · capture_names 저장 누락 수정
+# v11.35 월단위 전략 핵심 요약 · Colab식 줄바꿈 출력 수정
 # ============================================================
 def _month_label(period):
     try:
@@ -3431,8 +3434,6 @@ def render_monthly_strategy_highlights(result, market):
     latest = pair["latest_data_date"]
     current_period, next_period = pair["current_period"], pair["next_period"]
 
-    import html as _html
-
     # 1) 이번달 실제 운용 확정 신호
     st.markdown(f"### ✅ {_month_label(current_period)} 실제 운용 포지션 · 확정")
     st.caption(
@@ -3445,10 +3446,9 @@ def render_monthly_strategy_highlights(result, market):
         market,
         f"{_month_label(current_period)} 실제 운용 포지션 · 확정",
     )
-    st.markdown(
-        f'<pre class="td-monthly-signal-pre confirmed">{_html.escape(current_text)}</pre>',
-        unsafe_allow_html=True,
-    )
+    # raw HTML <pre>는 Streamlit Markdown 처리 과정에서 줄바꿈이 합쳐질 수 있어
+    # st.code를 사용해 Google Colab처럼 개행을 확실히 보존한다.
+    st.code(current_text, language="text")
 
     # 2) 다음달 예상 임시 신호
     st.markdown(f"### 🟡 {_month_label(next_period)} 예상 포지션 · 임시 체크")
@@ -3461,10 +3461,7 @@ def render_monthly_strategy_highlights(result, market):
         market,
         f"{_month_label(next_period)} 예상 포지션 · 임시 체크",
     )
-    st.markdown(
-        f'<pre class="td-monthly-signal-pre preview">{_html.escape(preview_text)}</pre>',
-        unsafe_allow_html=True,
-    )
+    st.code(preview_text, language="text")
 
     if market == "KR":
         cur_asset = _clean_asset_text(cur.get("Current_Holdings"))
