@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc
 
+# v11.36: 한국 ETF 소라티노/상대강도 run_korea_sector NameError 수정
 # v11.29: 월단위 전략 이번달/다음달 미리체크 요약 강화 + 미국 월말 신호 계산 수정 + 기존 v11.28 기능 유지
 st.set_page_config(page_title="태린이아빠 Market Dashboard", page_icon="📊", layout="wide")
 
@@ -1110,22 +1111,12 @@ def run_korea_sector(excel_bytes):
         with contextlib.redirect_stderr(diagnostics):
             exec(src, ns, ns)
         payload = {"colab_events": events, "event_count": len(events)}
-        if capture_names:
-            for _capture_name in capture_names:
-                if _capture_name in ns:
-                    payload[_capture_name] = _storage_safe(ns[_capture_name])
         return True, payload, diagnostics.getvalue()[-12000:], [], []
     except Exception:
         tb = traceback.format_exc()
         diagnostics.write("\n" + tb)
         _append_text("\n❌ 계산 오류\n" + tb)
         payload = {"colab_events": events}
-        if capture_names:
-            for name in capture_names:
-                if name in ns:
-                    safe_value = _storage_safe(ns[name])
-                    if safe_value is not None:
-                        payload[name] = safe_value
         return False, payload, diagnostics.getvalue()[-20000:], [], []
     finally:
         plt.show = old_show
