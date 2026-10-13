@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+yfinance
+matplotlib
+pandas_datareader
+scikit-learn
+openpyxl
+requests
+lxml
+exchange_calendars
