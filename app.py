@@ -10,6 +10,7 @@ import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+# v11.44: 한국 일별 수급 2파트 재배치 · 기관 평균순위 2종 상위 50개 정확히 표시
 # v11.43: 주도주·업종에 한국 일별 수급 동향 점검 추가 · KRX 매수대금/시총대비 Top50
 # v11.42: 시장지표 5번째 한국 과매도 과매수 점검(SIO) 추가 · 날짜 시트 자동 인식
 # v11.41: 미국 월단위 V8.1 52개 ETF + SUPER70 파라미터 반영
@@ -1775,7 +1776,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.43")
+    st.caption("Market Dashboard · LIVE v11.44")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -3035,6 +3036,7 @@ def run_korea_daily_flow(excel_bytes):
 
     inst = ['사모', '투신', '연기금']
     avg_cap = {c: sum(rank_cap[w][c] for w in inst) / 3.0 for c in codes}
+    avg_amt = {c: sum(rank_amt[w][c] for w in inst) / 3.0 for c in codes}
 
     rows = []
     for c in codes:
@@ -3046,6 +3048,7 @@ def run_korea_daily_flow(excel_bytes):
             '시장': market,
             '시가총액(억원)': cap / 1e8,
             '기관 시총대비 평균순위': avg_cap[c],
+            '기관 절대매수금액 평균순위': avg_amt[c],
         }
         for who in who_list:
             amt = buys[who][c]
@@ -3056,11 +3059,27 @@ def run_korea_daily_flow(excel_bytes):
         rows.append(row)
     all_df = pd.DataFrame(rows)
 
-    def top_avg():
+    def top_avg_cap():
+        # 평균순위는 세 기관 개별순위의 산술평균이므로 '평균값 <= 50' 필터를 쓰면
+        # 50개가 안 나올 수 있다. 평균순위가 좋은 순서대로 정확히 상위 50개를 표시한다.
         cols = ['종목코드','종목명','업종','시가총액(억원)',
                 '사모 시총대비 순위','투신 시총대비 순위','연기금 시총대비 순위','기관 시총대비 평균순위']
-        d = all_df.loc[all_df['기관 시총대비 평균순위'] <= 50, cols].copy()
-        return d.sort_values(['기관 시총대비 평균순위','시가총액(억원)'], ascending=[True,False]).reset_index(drop=True)
+        d = all_df[cols].copy()
+        return d.sort_values(
+            ['기관 시총대비 평균순위','시가총액(억원)'],
+            ascending=[True,False]
+        ).head(50).reset_index(drop=True)
+
+    def top_avg_amt():
+        # 절대매수금액 평균순위 역시 재랭킹하지 않고, 세 기관 순위 평균값이 좋은
+        # 종목을 순서대로 정확히 상위 50개 표시한다.
+        cols = ['종목코드','종목명','업종','시가총액(억원)',
+                '사모 절대매수 순위','투신 절대매수 순위','연기금 절대매수 순위','기관 절대매수금액 평균순위']
+        d = all_df[cols].copy()
+        return d.sort_values(
+            ['기관 절대매수금액 평균순위','시가총액(억원)'],
+            ascending=[True,False]
+        ).head(50).reset_index(drop=True)
 
     def top_ratio(who):
         rank_col = f'{who} 시총대비 순위'
@@ -3077,7 +3096,9 @@ def run_korea_daily_flow(excel_bytes):
     return {
         'stock_count': len(codes),
         'missing_industry': int(sum(not industry.get(c) for c in codes)),
-        'institution_avg_cap_top50': top_avg(),
+        'foreign_amt_top50': top_amount('외국인'),
+        'institution_avg_cap_top50': top_avg_cap(),
+        'institution_avg_amt_top50': top_avg_amt(),
         'private_cap_top50': top_ratio('사모'),
         'trust_cap_top50': top_ratio('투신'),
         'pension_cap_top50': top_ratio('연기금'),
@@ -3085,7 +3106,6 @@ def run_korea_daily_flow(excel_bytes):
         'private_amt_top50': top_amount('사모'),
         'trust_amt_top50': top_amount('투신'),
         'pension_amt_top50': top_amount('연기금'),
-        'foreign_amt_top50': top_amount('외국인'),
     }
 
 
@@ -3113,20 +3133,34 @@ def render_korea_daily_flow(result):
         st.error('저장된 수급 결과 형식을 읽을 수 없습니다.')
         return
     st.caption(f"분석대상 보통주 {int(result.get('stock_count',0)):,}개 · 업종 미매칭 {int(result.get('missing_industry',0)):,}개")
-    st.caption('※ 매수대금은 KRX 투자주체별 거래대금_매수 기준이며 순매수가 아닙니다. 순위는 전체 분석 유니버스 내 내림차순 공동순위입니다.')
+    st.caption('※ 매수대금은 KRX 투자주체별 거래대금_매수 기준이며 순매수가 아닙니다. 기관 평균순위는 사모·투신·연기금 3개 개별순위의 산술평균이며 다시 RANK하지 않습니다.')
 
-    sections = [
-        ('1. 사모·투신·연기금 시총대비 평균순위 50등 이내', 'institution_avg_cap_top50'),
-        ('2. 사모 시가총액대비 매수 50등 이내', 'private_cap_top50'),
-        ('3. 투신 시가총액대비 매수 50등 이내', 'trust_cap_top50'),
-        ('4. 연금 시가총액대비 매수 50등 이내', 'pension_cap_top50'),
-        ('5. 외국인 시가총액대비 매수 50등 이내', 'foreign_cap_top50'),
-        ('6. 사모 절대매수금액 50등 이내', 'private_amt_top50'),
-        ('7. 투신 절대매수금액 50등 이내', 'trust_amt_top50'),
-        ('8. 연금 절대매수금액 50등 이내', 'pension_amt_top50'),
-        ('9. 외국인 절대매수금액 50등 이내', 'foreign_amt_top50'),
+    st.markdown('## 1. 가장중요한 외국인 금액과 수급 동향 평균 등수')
+    important_sections = [
+        ('1) 외국인 금액대비 매수 50등', 'foreign_amt_top50'),
+        ('2) 사모·투신·연기금 시총대비 평균 매수대비 상위 50개', 'institution_avg_cap_top50'),
+        ('3) 사모·투신·연기금 절대매수금액 평균 등수 대비 상위 50개', 'institution_avg_amt_top50'),
     ]
-    for title, key in sections:
+    for title, key in important_sections:
+        st.markdown(f'### {title}')
+        df = result.get(key)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            st.dataframe(_style_kr_flow_df(df), use_container_width=True, hide_index=True)
+        else:
+            st.info('조건에 해당하는 종목이 없습니다.')
+
+    st.markdown('---')
+    st.markdown('## 2. 개별 수급 동향 체크')
+    individual_sections = [
+        ('1) 사모 시가총액대비 매수 50등', 'private_cap_top50'),
+        ('2) 투신 시가총액대비 매수 50등', 'trust_cap_top50'),
+        ('3) 연금 시가총액대비 매수 50등', 'pension_cap_top50'),
+        ('4) 외국인 시가총액대비 매수 50등', 'foreign_cap_top50'),
+        ('5) 사모 절대매수금액 대비 매수 50등', 'private_amt_top50'),
+        ('6) 투신 절대매수금액 대비 매수 50등', 'trust_amt_top50'),
+        ('7) 연기금 절대매수금액 대비 매수 50등', 'pension_amt_top50'),
+    ]
+    for title, key in individual_sections:
         st.markdown(f'### {title}')
         df = result.get(key)
         if isinstance(df, pd.DataFrame) and not df.empty:
