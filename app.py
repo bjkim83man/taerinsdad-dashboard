@@ -7,8 +7,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import io, contextlib, traceback, time
-import base64, pickle, requests, gzip, re, gc
+import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
+from xml.etree import ElementTree as ET
 
+# v11.42: 시장지표 5번째 한국 과매도 과매수 점검(SIO) 추가 · 날짜 시트 자동 인식
 # v11.41: 미국 월단위 V8.1 52개 ETF + SUPER70 파라미터 반영
 # v11.40: 국내/미국 월단위 리밸런싱을 HTS 직접 수집 ETF 엑셀 기반 코드로 교체
 # v11.39: 일본·대만 VERIFIED v4 유지 + exchange_calendars 의존성 제거(실제 거래일 자동 추론)
@@ -388,7 +390,7 @@ def load_active_result_only(active_key):
     """
     result_keys = [
         "liq", "fg", "canary", "rotation", "ai", "jp_tw_market",
-        "us_sector", "kr_sector", "kr_fg", "tw_revenue",
+        "us_sector", "kr_sector", "kr_fg", "kr_sio", "tw_revenue",
         "kr_monthly", "us_monthly",
     ]
 
@@ -1750,6 +1752,7 @@ NAV_GROUPS = {
         "미국 피어앤그리드 오실레이터",
         "미국 위험신호",
         "한국 피어앤그리드 오실레이터",
+        "한국 과매도 과매수 점검",
     ],
     "반도체 데이터 점검": [
         "AI하드웨어 주가 모멘텀 점검",
@@ -1770,7 +1773,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.35")
+    st.caption("Market Dashboard · LIVE v11.42")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -1853,6 +1856,10 @@ PAGE_GUIDES = {
         "why": "한국시장은 KOSPI와 KOSDAQ의 체감이 크게 다르고 개인 수급의 영향도 큽니다. 가격·모멘텀·수급을 함께 보면서 국내시장의 과열과 공포를 따로 확인하기 위한 화면입니다.",
         "check": "Fear & Greed, EMA20, Oscillator와 함께 DeMark·개인 순매수 Capitulation을 봅니다. 극단값 하나보다 여러 보조지표가 같은 방향을 가리킬 때 의미를 더 크게 봅니다.",
     },
+    "한국 과매도 과매수 점검": {
+        "why": "SIO는 코스피200·코스닥150·코스피대형주처럼 종목군을 묶어, 그날 상승 종목과 하락 종목의 거래량 및 가격 움직임이 어느 쪽에 더 강하게 쏠렸는지를 -100%~+100% 방향으로 보여주는 시장 내부 강도 지표입니다. 지수 등락만 보는 것보다 종목군 내부의 투매·추격매수 강도를 함께 확인할 수 있습니다.",
+        "check": "각 종목은 시작일 기준가 대비 종가의 상승·하락을 판별합니다. 상승 거래량 비중과 상승 등락폭 비중의 평균을 '상승 평균', 하락 거래량 비중과 하락 등락폭 비중의 평균을 '하락 평균'으로 계산한 뒤 더 우세한 쪽을 SIO로 표시합니다. SIO ≤ -80%는 과매도, SIO ≥ +80%는 과매수, +90% 이상은 강한 과매수입니다. 과매도 뒤 1~5거래일 안에 +80% 이상으로 전환되면 Bottom 통과로 해석합니다. 날짜 시트를 새로 추가해 같은 파일을 다시 업로드·계산하면 시계열이 자동으로 늘어납니다.",
+    },
     "AI하드웨어 주가 모멘텀 점검": {
         "why": "AI 하드웨어 뉴스가 좋아도 실제 주가 상승이 일부 종목에만 몰리면 추세의 질은 약할 수 있습니다. GPU·메모리·장비·네트워크 등 AI 하드웨어 밸류체인의 Breadth와 모멘텀을 함께 보면 상승이 넓게 퍼지는지 확인할 수 있습니다.",
         "check": "원본 Colab 결과의 기간별 상승·하락 종목 수, Breadth Score, 기울기, 60일 상승종목 비율, 신고가·AI Tech Index 다이버전스를 순서대로 봅니다. 지수는 오르는데 Breadth가 약해지면 쏠림 상승 가능성을 점검합니다.",
@@ -1896,7 +1903,7 @@ if _guide:
     st.caption("※ 하나의 지표만으로 매수·매도를 결정하기보다, 서로 다른 데이터가 같은 방향을 가리키는지 확인하는 점검용 화면입니다.")
 
 # 수동 업데이트 전용 상태
-for _k in ["liq","fg","canary","trend","rotation","ai","jp_tw_market","us_sector","kr_sector","kr_monthly","us_monthly"]:
+for _k in ["liq","fg","canary","trend","rotation","ai","jp_tw_market","us_sector","kr_sector","kr_sio","kr_monthly","us_monthly"]:
     st.session_state.setdefault(_k+"_result", None)
     st.session_state.setdefault(_k+"_updated", None)
 
@@ -2724,6 +2731,267 @@ def render_japan_semiconductor(result):
             for e in result["errors"]: st.caption(e)
 
 
+
+# ============================================================
+# v11.42 한국 SIO · 종목군별 과매도/과매수 점검
+# - 입력 Excel 안의 YYYYMMDD / YYYY-MM-DD / YYYY.MM.DD 날짜 시트를 자동 인식
+# - 결과는 요청한 전체추이 표 1개만 저장·표시
+# ============================================================
+_SIO_OVER_SOLD = -0.80
+_SIO_OVER_BOUGHT = 0.80
+_SIO_STRONG_OVER_BOUGHT = 0.90
+_SIO_BOTTOM_WINDOW = 5
+_SIO_NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+_SIO_REL = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+_SIO_GROUP_ORDER = ["코스피200", "코스닥150", "코스피대형주"]
+
+
+def _sio_text_cell(x):
+    return '' if x is None else str(x).strip()
+
+
+def _sio_norm_code(x):
+    value = _sio_text_cell(x).upper().replace(' ', '')
+    if value.startswith('A') and value[1:].isdigit():
+        value = value[1:]
+    if re.fullmatch(r'\d+\.0+', value):
+        value = value.partition('.')[0]
+    if re.fullmatch(r'\d{1,6}', value):
+        return value.zfill(6)
+    if re.fullmatch(r'[0-9A-Z]{6}', value):
+        return value
+    return None
+
+
+def _sio_number(x):
+    if x is None or x == '':
+        return None
+    try:
+        value = float(str(x).replace(',', '').strip())
+        return value if math.isfinite(value) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _sio_date_from_sheet(name):
+    found = re.fullmatch(r'(20\d{2})[.\-_]?(\d{2})[.\-_]?(\d{2})', str(name).strip())
+    if not found:
+        return None
+    try:
+        return datetime(*[int(s) for s in found.groups()]).date()
+    except ValueError:
+        return None
+
+
+def _sio_xlsx_sheets(excel_bytes):
+    result = {}
+    with zipfile.ZipFile(io.BytesIO(excel_bytes)) as z:
+        members = set(z.namelist())
+        strings = []
+        if 'xl/sharedStrings.xml' in members:
+            sr = ET.fromstring(z.read('xl/sharedStrings.xml'))
+            strings = [''.join(t.text or '' for t in si.iter(_SIO_NS + 't')) for si in sr.findall(_SIO_NS + 'si')]
+        book = ET.fromstring(z.read('xl/workbook.xml'))
+        rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+        targets = {r.get('Id'): r.get('Target') for r in rels}
+        for sheet in book.find(_SIO_NS + 'sheets').findall(_SIO_NS + 'sheet'):
+            name = sheet.get('name')
+            target = targets[sheet.get(_SIO_REL + 'id')].lstrip('/')
+            path = target if target.startswith('xl/') else posixpath.normpath('xl/' + target)
+            if path not in members:
+                raise ValueError(f'시트 파일을 찾을 수 없음: {name} → {path}')
+            records = []
+            with z.open(path) as src:
+                for _, element in ET.iterparse(src, events=('end',)):
+                    if element.tag != _SIO_NS + 'row':
+                        continue
+                    row = {}
+                    for c in element.findall(_SIO_NS + 'c'):
+                        m = re.match(r'[A-Z]+', c.get('r', ''))
+                        if not m:
+                            continue
+                        col = m.group(0)
+                        v = c.find(_SIO_NS + 'v')
+                        value = v.text if v is not None else None
+                        if c.get('t') == 's' and value is not None:
+                            value = strings[int(value)]
+                        elif c.get('t') == 'inlineStr':
+                            value = ''.join(t.text or '' for t in c.iter(_SIO_NS + 't'))
+                        row[col] = value
+                    records.append(row)
+                    element.clear()
+            result[name] = records
+    return result
+
+
+def _sio_read_categories(sheets):
+    groups = {}
+    for name, rows in sheets.items():
+        if _sio_date_from_sheet(name) or not rows:
+            continue
+        if name not in _SIO_GROUP_ORDER:
+            continue
+        if '종목코드' not in _sio_text_cell(rows[0].get('A')):
+            continue
+        codes = [_sio_norm_code(r.get('A')) for r in rows[1:]]
+        codes = [x for x in codes if x]
+        if len(codes) >= 5:
+            groups[name] = set(codes)
+    missing = [g for g in _SIO_GROUP_ORDER if g not in groups]
+    if missing:
+        raise ValueError('필수 분류 시트 없음: ' + ', '.join(missing))
+    return {g: groups[g] for g in _SIO_GROUP_ORDER}
+
+
+def _sio_read_daily(sheets):
+    dates = sorted((d, name) for name in sheets for d in [_sio_date_from_sheet(name)] if d)
+    if not dates:
+        raise ValueError('20261016 또는 2026-10-16 형태의 날짜 시트가 없습니다.')
+    daily = []
+    for date, name in dates:
+        rows = sheets[name]
+        if not rows or '종목코드' not in _sio_text_cell(rows[0].get('A')):
+            raise ValueError(f'{name} 시트의 A1에 종목코드가 없습니다.')
+        if '거래량' not in _sio_text_cell(rows[0].get('G')):
+            raise ValueError(f'{name} 시트에 G열 거래량이 없습니다.')
+        mapping = {}
+        for row in rows[1:]:
+            code = _sio_norm_code(row.get('A'))
+            if code:
+                mapping[code] = row
+        daily.append((date, name, mapping))
+    return daily
+
+
+def _sio_calculate(daily, groups):
+    results = {g: [] for g in groups}
+    for date, tab, records in daily:
+        for group, members in groups.items():
+            up_vol = down_vol = up_point = down_point = 0.0
+            for code in members:
+                row = records.get(code)
+                if not row:
+                    continue
+                volume = _sio_number(row.get('G'))
+                start = _sio_number(row.get('C'))
+                close = _sio_number(row.get('D'))
+                pct = _sio_number(row.get('F'))
+                if volume is None or volume <= 0:
+                    continue
+                if start is not None and close is not None and start > 0 and close > 0:
+                    change = (close / start) - 1
+                elif pct is not None:
+                    change = pct / 100.0
+                else:
+                    continue
+                if change > 1e-12:
+                    up_vol += volume
+                    up_point += change
+                elif change < -1e-12:
+                    down_vol += volume
+                    down_point -= change
+            total_vol = up_vol + down_vol
+            total_point = up_point + down_point
+            if not total_vol or not total_point:
+                sio = None
+                state = '계산불가'
+            else:
+                up_avg = ((up_vol / total_vol) + (up_point / total_point)) / 2.0
+                down_avg = ((down_vol / total_vol) + (down_point / total_point)) / 2.0
+                sio = up_avg if up_avg > down_avg else -down_avg
+                state = '과매도' if sio <= _SIO_OVER_SOLD else ('과매수' if sio >= _SIO_OVER_BOUGHT else '중립')
+            results[group].append({'date': date.isoformat(), 'sio': sio, 'state': state, 'bottom': False})
+
+    # Bottom 판정은 계산하되 요청한 화면 표에는 별도 열로 표시하지 않는다.
+    for group, rows in results.items():
+        last_oversold_index = None
+        for i, row in enumerate(rows):
+            if last_oversold_index is not None and i - last_oversold_index > _SIO_BOTTOM_WINDOW:
+                last_oversold_index = None
+            if row['sio'] is None:
+                continue
+            if row['sio'] <= _SIO_OVER_SOLD:
+                last_oversold_index = i
+            elif last_oversold_index is not None:
+                lag = i - last_oversold_index
+                if row['sio'] >= _SIO_OVER_BOUGHT and 1 <= lag <= _SIO_BOTTOM_WINDOW:
+                    row['bottom'] = True
+                    last_oversold_index = None
+    return results
+
+
+def run_korea_sio(excel_bytes):
+    sheets = _sio_xlsx_sheets(excel_bytes)
+    groups = _sio_read_categories(sheets)
+    daily = _sio_read_daily(sheets)
+    results = _sio_calculate(daily, groups)
+    group_names = list(groups.keys())
+    dates = [r['date'] for r in results[group_names[0]]]
+    rows = []
+    for i, date in enumerate(dates):
+        row = {'날짜': date}
+        for g in group_names:
+            row[g] = results[g][i]['sio']
+        for g in group_names:
+            row[g + ' 상태'] = results[g][i]['state']
+        rows.append(row)
+    table = pd.DataFrame(rows)
+    return {
+        'table': table,
+        'groups': group_names,
+        'count': len(dates),
+        'start': dates[0],
+        'end': dates[-1],
+    }
+
+
+def render_korea_sio_result(result):
+    if not isinstance(result, dict) or not isinstance(result.get('table'), pd.DataFrame):
+        st.error('저장된 SIO 결과 형식을 읽을 수 없습니다. 관리자가 최신 엑셀로 한 번 다시 계산해 주세요.')
+        return
+    df = result['table'].copy()
+    groups = result.get('groups') or [g for g in _SIO_GROUP_ORDER if g in df.columns]
+    count = int(result.get('count') or len(df))
+    start = result.get('start') or (str(df.iloc[0]['날짜']) if len(df) else '')
+    end = result.get('end') or (str(df.iloc[-1]['날짜']) if len(df) else '')
+
+    st.markdown('### SIO | 종목군별 시장 내부 강도')
+    st.caption('과매도 ≤ -80%: 파란색 | 과매수 ≥ +80%: 빨간색 | 강한 과매수 ≥ +90%: 진빨간색 | 5거래일 이내 매수 전환 = Bottom 통과')
+    st.caption(f"{count}거래일 · {start} ~ {end} · 분류: " + ', '.join(groups))
+
+    def _style_row(row):
+        styles = [''] * len(row)
+        cols = list(row.index)
+        for g in groups:
+            if g not in cols:
+                continue
+            j = cols.index(g)
+            v = row[g]
+            css = ''
+            if pd.notna(v):
+                if v <= _SIO_OVER_SOLD:
+                    css = 'background-color:#0B5CAD;color:#FFFFFF;font-weight:800;'
+                elif v >= _SIO_STRONG_OVER_BOUGHT:
+                    css = 'background-color:#8B0000;color:#FFFFFF;font-weight:800;'
+                elif v >= _SIO_OVER_BOUGHT:
+                    css = 'background-color:#D93A3A;color:#FFFFFF;font-weight:800;'
+            styles[j] = css
+            state_col = g + ' 상태'
+            if state_col in cols:
+                k = cols.index(state_col)
+                styles[k] = css if css else ''
+        return styles
+
+    fmt = {g: (lambda x: '' if pd.isna(x) else f'{x:.2%}') for g in groups}
+    styler = df.style.format(fmt).apply(_style_row, axis=1)
+    st.dataframe(
+        styler,
+        use_container_width=True,
+        hide_index=True,
+        height=min(650, 38 * (len(df) + 1) + 8),
+    )
+
+
 KOREA_FG_SRC = '# ============================================================\n# Full Code\n# KOSPI/KOSDAQ Fear & Greed Index + EMA20 + Oscillator + Index\n# + Elder Impulse\n# + Daily DeMark TD Setup (custom: Sell=4, Buy=2)\n#\n# 그래프 표시 기간: 최근 1년\n#\n# Fear & Greed 구성:\n# 1. 125일 모멘텀\n# 2. ATM Put/Call\n# 3. VKOSPI\n# 4. 10년 국채선물지수 - 5년 국채선물 추종지수\n# 5. RSI 10일\n#\n# 주의:\n# - 그래프를 1년 온전히 표시하려면 엑셀 원본에 최소 약 1년 7~8개월 이상의\n#   데이터가 있는 것이 좋습니다.\n# - 125일 이동평균 계산 전 구간은 Fear & Greed 값이 NaN이므로 표시되지 않습니다.\n# ============================================================\n\nimport pandas as pd\nimport numpy as np\nimport matplotlib.pyplot as plt\nfrom sklearn.preprocessing import MinMaxScaler\n\n\n# ============================================================\n# 0) 기본 설정\n# ============================================================\n\nplt.rcParams[\'axes.unicode_minus\'] = False\n\n# 한글 폰트가 설치된 Colab 환경이라면 아래 줄 사용\n# plt.rcParams[\'font.family\'] = \'NanumGothic\'\n\n# 그래프 표시 기간\nDISPLAY_MONTHS = 12\n\n\n# =============================\n# 색상 팔레트\n# =============================\n\nCOL_FG_INDEX = \'#1565C0\'       # Fear & Greed Index\nCOL_FG_EMA20 = \'#F57C00\'       # F&G EMA20\nCOL_OSC = \'#6A5ACD\'            # Oscillator\nCOL_PRICE = \'#2F2F2F\'          # 지수 가격\n\nCOL_SUPERMA = \'#FF8C00\'\nCOL_GAP = \'#00B3B3\'\n\nGRID_ALPHA = 0.3\n\n\n# ============================================================\n# 1) 엑셀 업로드 및 로드\n# ============================================================\n\n\n\nfile_name = io.BytesIO(EXCEL_BYTES)\n\nkospi_df = pd.read_excel(\n    file_name,\n    sheet_name=\'KOSPI\'\n)\n\nkosdaq_df = pd.read_excel(\n    file_name,\n    sheet_name=\'KOSDAQ\'\n)\n\n# 개인 순매수와 KOSPI 지수 데이터\n# 첫 번째 열은 날짜, 두 번째 열은 KOSPI 종가, 세 번째 열은 개인 순매수대금(억원)\nindividual_df = pd.read_excel(\n    file_name,\n    sheet_name=\'개인순매수와코스피지수\'\n)\n\n\n# ============================================================\n# 2) Date 컬럼 처리\n# ============================================================\n\ndef ensure_date_col(df):\n    df = df.copy()\n\n    if \'Date\' not in df.columns:\n        df = df.rename(\n            columns={df.columns[0]: \'Date\'}\n        )\n\n    df[\'Date\'] = pd.to_datetime(\n        df[\'Date\'],\n        errors=\'coerce\'\n    )\n\n    df = df.dropna(\n        subset=[\'Date\']\n    ).copy()\n\n    df = df.sort_values(\'Date\').reset_index(drop=True)\n\n    return df\n\n\nkospi_df = ensure_date_col(kospi_df)\nkosdaq_df = ensure_date_col(kosdaq_df)\n\n\ndef prepare_individual_flow(df):\n    """\n    개인순매수와코스피지수 시트를 표준 형태로 정리합니다.\n\n    기대 구조\n    - 1열: 날짜\n    - 2열: KOSPI 종가지수\n    - 3열: 개인 순매수대금(일간, 억원)\n    """\n    df = df.copy()\n\n    if df.shape[1] < 3:\n        raise ValueError(\n            "\'개인순매수와코스피지수\' 시트에는 최소 3개 열이 필요합니다."\n        )\n\n    df = df.iloc[:, :3].copy()\n    df.columns = [\n        \'Date\',\n        \'KOSPI_Close\',\n        \'Individual_NetBuy_100M\'\n    ]\n\n    df[\'Date\'] = pd.to_datetime(\n        df[\'Date\'],\n        errors=\'coerce\'\n    )\n\n    for col in [\n        \'KOSPI_Close\',\n        \'Individual_NetBuy_100M\'\n    ]:\n        df[col] = pd.to_numeric(\n            df[col],\n            errors=\'coerce\'\n        )\n\n    df = (\n        df.dropna(\n            subset=[\n                \'Date\',\n                \'KOSPI_Close\',\n                \'Individual_NetBuy_100M\'\n            ]\n        )\n        .sort_values(\'Date\')\n        .drop_duplicates(\'Date\', keep=\'last\')\n        .reset_index(drop=True)\n    )\n\n    # X축: KOSPI 일간 수익률(%)\n    df[\'KOSPI_Return_Pct\'] = (\n        df[\'KOSPI_Close\']\n        .pct_change()\n        * 100\n    )\n\n    # Y축: 개인 일간 순매수대금(조원)\n    # 원본 단위가 억원이므로 10,000으로 나눔\n    df[\'Individual_NetBuy_Trillion\'] = (\n        df[\'Individual_NetBuy_100M\']\n        / 10000\n    )\n\n    # 3사분면: KOSPI 하락 + 개인 순매도\n    df[\'Is_Third_Quadrant\'] = (\n        (df[\'KOSPI_Return_Pct\'] < 0)\n        & (df[\'Individual_NetBuy_Trillion\'] < 0)\n    )\n\n    return df\n\n\nindividual_flow = prepare_individual_flow(individual_df)\n\n\n# ============================================================\n# 3) 수치형 컬럼 변환\n# ============================================================\n\nkospi_cols = [\n    \'5년 국채선물 추종 지수\',\n    \'10년국채선물지수\',\n    \'코스피 200 변동성지수\',\n    \'코스피\',\n    \'최근월물 CALL ATM\',\n    \'최근월물 PUT ATM\'\n]\n\nkosdaq_cols = [\n    \'5년 국채선물 추종 지수\',\n    \'10년국채선물지수\',\n    \'코스피 200 변동성지수\',\n    \'코스닥\',\n    \'최근월물 CALL ATM\',\n    \'최근월물 PUT ATM\'\n]\n\n\ndef convert_numeric_columns(df, columns):\n    df = df.copy()\n\n    for col in columns:\n        if col not in df.columns:\n            raise KeyError(\n                f"엑셀에 필요한 컬럼이 없습니다: {col}"\n            )\n\n        df[col] = pd.to_numeric(\n            df[col],\n            errors=\'coerce\'\n        )\n\n    return df\n\n\nkospi = convert_numeric_columns(\n    kospi_df,\n    kospi_cols\n)\n\nkosdaq = convert_numeric_columns(\n    kosdaq_df,\n    kosdaq_cols\n)\n\n\n# ============================================================\n# 4) RSI 계산\n# ============================================================\n\ndef calculate_rsi(df, col, window=10):\n    df = df.copy()\n\n    delta = df[col].diff()\n\n    gain = (\n        delta.where(delta > 0, 0)\n        .rolling(window=window)\n        .mean()\n    )\n\n    loss = (\n        -delta.where(delta < 0, 0)\n        .rolling(window=window)\n        .mean()\n    )\n\n    rs = gain / loss.replace(0, np.nan)\n\n    df[f\'RSI_{window}\'] = (\n        100 - (100 / (1 + rs))\n    )\n\n    df.loc[\n        (loss == 0) & (gain > 0),\n        f\'RSI_{window}\'\n    ] = 100\n\n    return df\n\n\n# ============================================================\n# 5) Fear & Greed Index 계산\n# ============================================================\n\ndef calculate_fear_greed(\n    df,\n    index_col,\n    vix_col,\n    call_col,\n    put_col,\n    bond5_col,\n    bond10_col\n):\n    df = df.copy()\n\n    # 125일 모멘텀\n    df[\'MA125\'] = (\n        df[index_col]\n        .rolling(window=125)\n        .mean()\n    )\n\n    df[\'Momentum\'] = (\n        (df[index_col] - df[\'MA125\'])\n        / df[\'MA125\']\n        * 100\n    )\n\n    # ATM Put/Call\n    df[\'PutCall\'] = (\n        df[put_col]\n        / df[call_col].replace(0, np.nan)\n    )\n\n    # 변동성\n    df[\'Volatility\'] = df[vix_col]\n\n    # 국채선물 스프레드\n    df[\'BondDiff\'] = (\n        df[bond10_col]\n        - df[bond5_col]\n    )\n\n    df.replace(\n        [np.inf, -np.inf],\n        np.nan,\n        inplace=True\n    )\n\n    features = [\n        \'Momentum\',\n        \'PutCall\',\n        \'Volatility\',\n        \'BondDiff\',\n        \'RSI_10\'\n    ]\n\n    valid = df.dropna(\n        subset=features\n    ).index\n\n    df[\'Fear_Greed_Index\'] = np.nan\n    df[\'Fear_Greed_Score\'] = np.nan\n\n    if len(valid) == 0:\n        return df\n\n    scaler = MinMaxScaler()\n\n    scaled_features = scaler.fit_transform(\n        df.loc[valid, features]\n    )\n\n    scaled_df = pd.DataFrame(\n        scaled_features,\n        index=valid,\n        columns=[\n            \'Momentum_Scaled\',\n            \'PutCall_Scaled\',\n            \'Volatility_Scaled\',\n            \'BondDiff_Scaled\',\n            \'RSI_Scaled\'\n        ]\n    )\n\n    for col in scaled_df.columns:\n        df.loc[valid, col] = scaled_df[col]\n\n    df.loc[valid, \'Fear_Greed_Index\'] = (\n        df.loc[valid, \'Momentum_Scaled\'] * 0.20\n        + (1 - df.loc[valid, \'PutCall_Scaled\']) * 0.20\n        + (1 - df.loc[valid, \'Volatility_Scaled\']) * 0.20\n        + df.loc[valid, \'BondDiff_Scaled\'] * 0.20\n        + df.loc[valid, \'RSI_Scaled\'] * 0.20\n    )\n\n    df.loc[valid, \'Fear_Greed_Score\'] = (\n        df.loc[valid, \'Fear_Greed_Index\']\n        * 100\n    )\n\n    return df\n\n\n# ============================================================\n# 6) Fear & Greed MACD 및 EMA20\n# ============================================================\n\ndef calculate_macd(df, col=\'Fear_Greed_Index\'):\n    df = df.copy()\n\n    ema12 = (\n        df[col]\n        .ewm(span=12, adjust=False)\n        .mean()\n    )\n\n    ema26 = (\n        df[col]\n        .ewm(span=26, adjust=False)\n        .mean()\n    )\n\n    macd = ema12 - ema26\n\n    signal = (\n        macd\n        .ewm(span=9, adjust=False)\n        .mean()\n    )\n\n    df[\'FG_MACD\'] = macd\n    df[\'FG_Signal\'] = signal\n    df[\'Oscillator\'] = df[\'FG_MACD\'] - df[\'FG_Signal\']\n\n    df[\'FG_EMA20\'] = (\n        df[col]\n        .ewm(span=20, adjust=False)\n        .mean()\n    )\n\n    df[\'FG_EMA20_Score\'] = (\n        df[\'FG_EMA20\']\n        * 100\n    )\n\n    return df\n\n\n# ============================================================\n# 7) SuperMA 및 Gap%\n# ============================================================\n\ndef add_super_ma_gap(df, price_col, label):\n    df = df.copy()\n\n    for window in [20, 60, 120, 200]:\n        df[f\'{label}_MA{window}\'] = (\n            df[price_col]\n            .rolling(window)\n            .mean()\n        )\n\n    ma_columns = [\n        f\'{label}_MA20\',\n        f\'{label}_MA60\',\n        f\'{label}_MA120\',\n        f\'{label}_MA200\'\n    ]\n\n    df[f\'{label}_SuperMA\'] = (\n        df[ma_columns]\n        .mean(axis=1)\n    )\n\n    df[f\'{label}_GapPct\'] = (\n        (\n            df[price_col]\n            - df[f\'{label}_SuperMA\']\n        )\n        / df[f\'{label}_SuperMA\']\n        * 100\n    )\n\n    return df\n\n\n# ============================================================\n# 8) Elder Impulse 구성 요소\n# ============================================================\n\ndef add_impulse_components(df, price_col, label):\n    df = df.copy()\n\n    df[f\'{label}_EMA13\'] = (\n        df[price_col]\n        .ewm(span=13, adjust=False)\n        .mean()\n    )\n\n    ema12 = (\n        df[price_col]\n        .ewm(span=12, adjust=False)\n        .mean()\n    )\n\n    ema26 = (\n        df[price_col]\n        .ewm(span=26, adjust=False)\n        .mean()\n    )\n\n    macd = ema12 - ema26\n\n    signal = (\n        macd\n        .ewm(span=9, adjust=False)\n        .mean()\n    )\n\n    df[f\'{label}_MACD_Hist\'] = (\n        macd - signal\n    )\n\n    return df\n\n\ndef get_impulse_colors(df, ema_col, macd_col):\n    colors = []\n\n    for i in range(len(df)):\n        if i == 0:\n            colors.append(\'gray\')\n            continue\n\n        ema_up = (\n            df[ema_col].iloc[i]\n            > df[ema_col].iloc[i - 1]\n        )\n\n        ema_down = (\n            df[ema_col].iloc[i]\n            < df[ema_col].iloc[i - 1]\n        )\n\n        macd_up = (\n            df[macd_col].iloc[i]\n            > df[macd_col].iloc[i - 1]\n        )\n\n        macd_down = (\n            df[macd_col].iloc[i]\n            < df[macd_col].iloc[i - 1]\n        )\n\n        if ema_up and macd_up:\n            colors.append(\'green\')\n\n        elif ema_down and macd_down:\n            colors.append(\'red\')\n\n        else:\n            colors.append(\'blue\')\n\n    return colors\n\n\n# ============================================================\n# 9) DeMark TD Setup\n# ============================================================\n\ndef add_td_setup_counts(\n    df,\n    price_col,\n    label=\'TD\'\n):\n    df = df.copy()\n\n    prices = df[price_col].values\n\n    sell = np.zeros(len(df))\n    buy = np.zeros(len(df))\n\n    for i in range(len(df)):\n\n        if (\n            i >= 4\n            and np.isfinite(prices[i])\n            and np.isfinite(prices[i - 4])\n            and prices[i] > prices[i - 4]\n        ):\n            sell[i] = sell[i - 1] + 1\n        else:\n            sell[i] = 0\n\n        if (\n            i >= 2\n            and np.isfinite(prices[i])\n            and np.isfinite(prices[i - 2])\n            and prices[i] < prices[i - 2]\n        ):\n            buy[i] = buy[i - 1] + 1\n        else:\n            buy[i] = 0\n\n    df[f\'{label}_SellSetup\'] = sell\n    df[f\'{label}_BuySetup\'] = buy\n\n    return df\n\n\n# ============================================================\n# 10) 전체 파이프라인 실행\n# ============================================================\n\nkospi = calculate_rsi(\n    kospi,\n    \'코스피\',\n    window=10\n)\n\nkosdaq = calculate_rsi(\n    kosdaq,\n    \'코스닥\',\n    window=10\n)\n\n\nkospi = calculate_fear_greed(\n    kospi,\n    index_col=\'코스피\',\n    vix_col=\'코스피 200 변동성지수\',\n    call_col=\'최근월물 CALL ATM\',\n    put_col=\'최근월물 PUT ATM\',\n    bond5_col=\'5년 국채선물 추종 지수\',\n    bond10_col=\'10년국채선물지수\'\n)\n\nkosdaq = calculate_fear_greed(\n    kosdaq,\n    index_col=\'코스닥\',\n    vix_col=\'코스피 200 변동성지수\',\n    call_col=\'최근월물 CALL ATM\',\n    put_col=\'최근월물 PUT ATM\',\n    bond5_col=\'5년 국채선물 추종 지수\',\n    bond10_col=\'10년국채선물지수\'\n)\n\n\nkospi = calculate_macd(\n    kospi,\n    col=\'Fear_Greed_Index\'\n)\n\nkosdaq = calculate_macd(\n    kosdaq,\n    col=\'Fear_Greed_Index\'\n)\n\n\nkospi = add_super_ma_gap(\n    kospi,\n    price_col=\'코스피\',\n    label=\'KOSPI\'\n)\n\nkosdaq = add_super_ma_gap(\n    kosdaq,\n    price_col=\'코스닥\',\n    label=\'KOSDAQ\'\n)\n\n\nkospi = add_impulse_components(\n    kospi,\n    price_col=\'코스피\',\n    label=\'KOSPI\'\n)\n\nkosdaq = add_impulse_components(\n    kosdaq,\n    price_col=\'코스닥\',\n    label=\'KOSDAQ\'\n)\n\n\nkospi = add_td_setup_counts(\n    kospi,\n    price_col=\'코스피\',\n    label=\'TD\'\n)\n\nkosdaq = add_td_setup_counts(\n    kosdaq,\n    price_col=\'코스닥\',\n    label=\'TD\'\n)\n\n\n# ============================================================\n# 11) 최근 1년 데이터\n# ============================================================\n\nkospi_cutoff = (\n    kospi[\'Date\'].max()\n    - pd.DateOffset(months=DISPLAY_MONTHS)\n)\n\nkosdaq_cutoff = (\n    kosdaq[\'Date\'].max()\n    - pd.DateOffset(months=DISPLAY_MONTHS)\n)\n\n\nrecent_kospi = kospi[\n    kospi[\'Date\'] >= kospi_cutoff\n].dropna(\n    subset=[\n        \'Fear_Greed_Score\',\n        \'FG_EMA20_Score\',\n        \'Oscillator\',\n        \'코스피\'\n    ]\n).copy()\n\n\nrecent_kosdaq = kosdaq[\n    kosdaq[\'Date\'] >= kosdaq_cutoff\n].dropna(\n    subset=[\n        \'Fear_Greed_Score\',\n        \'FG_EMA20_Score\',\n        \'Oscillator\',\n        \'코스닥\'\n    ]\n).copy()\n\n\n# ============================================================\n# 12) Fear & Greed 통합 그래프\n# ============================================================\n\ndef plot_fg(\n    df,\n    price_col,\n    title\n):\n    if df.empty:\n        print(f"{title}: 표시할 데이터가 없습니다.")\n        return\n\n    fig, ax_fg = plt.subplots(\n        figsize=(18, 8)\n    )\n\n    fig.subplots_adjust(\n        right=0.82\n    )\n\n    # 왼쪽 축: Fear & Greed Index\n    line_fg, = ax_fg.plot(\n        df[\'Date\'],\n        df[\'Fear_Greed_Score\'],\n        color=COL_FG_INDEX,\n        linewidth=2.5,\n        label=\'Fear & Greed Index\'\n    )\n\n    line_ema20, = ax_fg.plot(\n        df[\'Date\'],\n        df[\'FG_EMA20_Score\'],\n        color=COL_FG_EMA20,\n        linewidth=2.1,\n        label=\'F&G EMA20\'\n    )\n\n    ax_fg.set_ylim(\n        0,\n        100\n    )\n\n    ax_fg.set_ylabel(\n        \'Fear & Greed Index\',\n        color=COL_FG_INDEX,\n        fontsize=11\n    )\n\n    ax_fg.tick_params(\n        axis=\'y\',\n        labelcolor=COL_FG_INDEX\n    )\n\n    for level in [20, 50, 80]:\n        ax_fg.axhline(\n            level,\n            color=\'gray\',\n            linestyle=\'--\',\n            linewidth=0.8,\n            alpha=0.5,\n            label=\'_nolegend_\'\n        )\n\n    ax_fg.grid(\n        True,\n        alpha=GRID_ALPHA\n    )\n\n    ax_fg.set_xlabel(\'Date\')\n\n\n    # 오른쪽 축 1: 가격\n    ax_price = ax_fg.twinx()\n\n    line_price, = ax_price.plot(\n        df[\'Date\'],\n        df[price_col],\n        color=COL_PRICE,\n        linewidth=1.6,\n        alpha=0.48,\n        label=price_col\n    )\n\n    ax_price.set_ylabel(\n        price_col,\n        color=COL_PRICE,\n        fontsize=11\n    )\n\n    ax_price.tick_params(\n        axis=\'y\',\n        labelcolor=COL_PRICE\n    )\n\n\n    # 오른쪽 축 2: Oscillator\n    ax_osc = ax_fg.twinx()\n\n    ax_osc.spines[\'right\'].set_position(\n        (\'axes\', 1.11)\n    )\n\n    line_osc, = ax_osc.plot(\n        df[\'Date\'],\n        df[\'Oscillator\'],\n        color=COL_OSC,\n        linewidth=2.0,\n        label=\'Fear & Greed Oscillator\'\n    )\n\n    ax_osc.axhline(\n        0,\n        color=COL_OSC,\n        linewidth=0.9,\n        alpha=0.7,\n        label=\'_nolegend_\'\n    )\n\n    ax_osc.set_ylabel(\n        \'Oscillator\',\n        color=COL_OSC,\n        fontsize=11\n    )\n\n    ax_osc.tick_params(\n        axis=\'y\',\n        labelcolor=COL_OSC\n    )\n\n\n    latest = df.iloc[-1]\n\n    latest_fg = latest[\'Fear_Greed_Score\']\n    latest_ema = latest[\'FG_EMA20_Score\']\n    latest_osc = latest[\'Oscillator\']\n\n\n    lines = [\n        line_fg,\n        line_ema20,\n        line_osc,\n        line_price\n    ]\n\n    labels = [\n        line.get_label()\n        for line in lines\n    ]\n\n    ax_fg.legend(\n        lines,\n        labels,\n        loc=\'upper left\',\n        ncol=2,\n        frameon=True\n    )\n\n\n    ax_fg.set_title(\n        f\'{title}\\n\'\n        f\'Fear & Greed {latest_fg:.1f} | \'\n        f\'EMA20 {latest_ema:.1f} | \'\n        f\'Oscillator {latest_osc:.4f}\',\n        fontsize=14\n    )\n\n    plt.show()\n\n\nplot_fg(\n    recent_kospi,\n    price_col=\'코스피\',\n    title=\'KOSPI – Fear & Greed Index + EMA20 + Oscillator (1 Year)\'\n)\n\nplot_fg(\n    recent_kosdaq,\n    price_col=\'코스닥\',\n    title=\'KOSDAQ – Fear & Greed Index + EMA20 + Oscillator (1 Year)\'\n)\n\n\n# ============================================================\n# 13) Elder Impulse System 그래프\n# ============================================================\n\ndef plot_impulse(\n    df,\n    price_col,\n    ema_col,\n    macd_col,\n    title\n):\n    if df.empty:\n        print(f"{title}: 표시할 데이터가 없습니다.")\n        return\n\n    colors = get_impulse_colors(\n        df,\n        ema_col,\n        macd_col\n    )\n\n    plt.figure(\n        figsize=(18, 7)\n    )\n\n    plt.plot(\n        df[\'Date\'],\n        df[price_col],\n        color=COL_PRICE,\n        linewidth=1.5\n    )\n\n    plt.scatter(\n        df[\'Date\'],\n        df[price_col],\n        c=colors,\n        s=20\n    )\n\n    plt.grid(\n        True,\n        alpha=GRID_ALPHA\n    )\n\n    plt.title(title)\n\n    plt.tight_layout()\n\n    plt.show()\n\n\nplot_impulse(\n    recent_kospi,\n    price_col=\'코스피\',\n    ema_col=\'KOSPI_EMA13\',\n    macd_col=\'KOSPI_MACD_Hist\',\n    title=\'KOSPI – Elder Impulse System (1 Year)\'\n)\n\nplot_impulse(\n    recent_kosdaq,\n    price_col=\'코스닥\',\n    ema_col=\'KOSDAQ_EMA13\',\n    macd_col=\'KOSDAQ_MACD_Hist\',\n    title=\'KOSDAQ – Elder Impulse System (1 Year)\'\n)\n\n\n# ============================================================\n# 14) Daily DeMark TD Setup 그래프\n# ============================================================\n\ndef plot_demark_daily(\n    df,\n    price_col,\n    title,\n    display_months=12\n):\n    df = df.copy()\n\n    if df.empty:\n        print(f"{title}: 표시할 데이터가 없습니다.")\n        return\n\n    cutoff = (\n        df[\'Date\'].max()\n        - pd.DateOffset(months=display_months)\n    )\n\n    df = df[\n        df[\'Date\'] >= cutoff\n    ].copy()\n\n    if (\n        \'TD_SellSetup\' not in df.columns\n        or \'TD_BuySetup\' not in df.columns\n    ):\n        df = add_td_setup_counts(\n            df,\n            price_col,\n            label=\'TD\'\n        )\n\n    fig, ax_price = plt.subplots(\n        figsize=(18, 7)\n    )\n\n    line_price, = ax_price.plot(\n        df[\'Date\'],\n        df[price_col],\n        color=COL_PRICE,\n        linewidth=1.5,\n        label=price_col\n    )\n\n    ax_price.set_ylabel(\n        price_col,\n        color=COL_PRICE\n    )\n\n    ax_price.tick_params(\n        axis=\'y\',\n        labelcolor=COL_PRICE\n    )\n\n    ax_price.grid(\n        True,\n        alpha=GRID_ALPHA\n    )\n\n\n    ax_td = ax_price.twinx()\n\n    line_sell, = ax_td.plot(\n        df[\'Date\'],\n        df[\'TD_SellSetup\'],\n        color=\'red\',\n        linewidth=1.2,\n        label=\'TD Sell Setup\'\n    )\n\n    line_buy, = ax_td.plot(\n        df[\'Date\'],\n        df[\'TD_BuySetup\'],\n        color=\'blue\',\n        linewidth=1.2,\n        label=\'TD Buy Setup\'\n    )\n\n    ax_td.set_ylabel(\n        \'TD Setup Count\'\n    )\n\n    max_td = float(\n        df[\n            [\n                \'TD_SellSetup\',\n                \'TD_BuySetup\'\n            ]\n        ]\n        .max()\n        .max()\n    )\n\n    ax_td.set_ylim(\n        0,\n        max_td + 2\n    )\n\n\n    lines = [\n        line_price,\n        line_sell,\n        line_buy\n    ]\n\n    ax_price.legend(\n        lines,\n        [\n            line.get_label()\n            for line in lines\n        ],\n        loc=\'upper left\'\n    )\n\n    ax_price.set_title(title)\n\n    plt.tight_layout()\n\n    plt.show()\n\n\nplot_demark_daily(\n    kospi,\n    price_col=\'코스피\',\n    title=\'KOSPI – Daily DeMark TD Setup (Sell=4, Buy=2, 1 Year)\',\n    display_months=DISPLAY_MONTHS\n)\n\nplot_demark_daily(\n    kosdaq,\n    price_col=\'코스닥\',\n    title=\'KOSDAQ – Daily DeMark TD Setup (Sell=4, Buy=2, 1 Year)\',\n    display_months=DISPLAY_MONTHS\n)\n\n\n# ============================================================\n# 15) 최신 수치 출력\n# ============================================================\n\ndef print_latest_status(\n    df,\n    market_name,\n    price_col\n):\n    valid = df.dropna(\n        subset=[\n            \'Fear_Greed_Score\',\n            \'FG_EMA20_Score\',\n            \'FG_MACD\',\n            \'FG_Signal\',\n            \'Oscillator\',\n            price_col\n        ]\n    )\n\n    if valid.empty:\n        print(\n            f\'{market_name}: 계산 가능한 데이터가 없습니다.\'\n        )\n        return\n\n    latest = valid.iloc[-1]\n\n    print(\'=\' * 60)\n    print(f\'{market_name} 최신 Fear & Greed\')\n    print(\'=\' * 60)\n\n    print(\n        f"기준일: "\n        f"{latest[\'Date\'].strftime(\'%Y-%m-%d\')}"\n    )\n\n    print(\n        f"{price_col}: "\n        f"{latest[price_col]:,.2f}"\n    )\n\n    print(\n        f"Fear & Greed Index: "\n        f"{latest[\'Fear_Greed_Score\']:.2f}"\n    )\n\n    print(\n        f"F&G EMA20: "\n        f"{latest[\'FG_EMA20_Score\']:.2f}"\n    )\n\n    print(\n        f"MACD: "\n        f"{latest[\'FG_MACD\']:.6f}"\n    )\n\n    print(\n        f"Signal: "\n        f"{latest[\'FG_Signal\']:.6f}"\n    )\n\n    print(\n        f"Oscillator: "\n        f"{latest[\'Oscillator\']:.6f}"\n    )\n\n\nprint_latest_status(\n    kospi,\n    market_name=\'KOSPI\',\n    price_col=\'코스피\'\n)\n\nprint_latest_status(\n    kosdaq,\n    market_name=\'KOSDAQ\',\n    price_col=\'코스닥\'\n)\n\n# ============================================================\n# 16) 개인 수급 Capitulation(항복) 산점도\n# ============================================================\n\n# 판정 논리\n# - X축: KOSPI 일간 수익률(%)\n# - Y축: 개인 일간 순매수대금(조원)\n# - 3사분면: 지수 하락 + 개인 순매도\n# - 개인 항복(Capitulation): 3사분면이 2거래일 이상 연속 발생\n#\n# 색상\n# - 회색: 과거 데이터\n# - 주황: 올해 데이터(3사분면 제외)\n# - 노랑: 올해의 단발성 3사분면\n# - 빨강: 최신 연속 3사분면 구간(개인 항복 후보)\n\nCAPITULATION_MIN_CONSECUTIVE_DAYS = 2\nCAPITULATION_DISPLAY_MONTHS = 12\nLABEL_RETURN_THRESHOLD = 5.0       # 수익률 절대값이 이 이상이면 날짜 표시\nLABEL_FLOW_THRESHOLD = 1.5         # 개인 순매수 절대값(조원)이 이 이상이면 날짜 표시\n\n\ndef find_latest_true_streak(mask, min_length=2):\n    """\n    True가 연속된 가장 최근 구간의 인덱스를 반환합니다.\n    연속 길이가 min_length보다 짧으면 빈 리스트를 반환합니다.\n    """\n    mask = pd.Series(mask).fillna(False).astype(bool).reset_index(drop=True)\n\n    latest_streak = []\n    current_streak = []\n\n    for i, flag in enumerate(mask):\n        if flag:\n            current_streak.append(i)\n        else:\n            if len(current_streak) >= min_length:\n                latest_streak = current_streak.copy()\n            current_streak = []\n\n    if len(current_streak) >= min_length:\n        latest_streak = current_streak.copy()\n\n    return latest_streak\n\n\ndef plot_individual_capitulation(\n    df,\n    display_months=12,\n    min_consecutive_days=2\n):\n    df = df.copy().dropna(\n        subset=[\n            \'KOSPI_Return_Pct\',\n            \'Individual_NetBuy_Trillion\'\n        ]\n    )\n\n    if df.empty:\n        print(\'Individual capitulation chart: no data available.\')\n        return\n\n    cutoff = (\n        df[\'Date\'].max()\n        - pd.DateOffset(months=display_months)\n    )\n\n    plot_df = (\n        df[df[\'Date\'] >= cutoff]\n        .copy()\n        .reset_index(drop=True)\n    )\n\n    if plot_df.empty:\n        print(\'Individual capitulation chart: no data in the selected period.\')\n        return\n\n    latest_year = int(plot_df[\'Date\'].max().year)\n    is_current_year = plot_df[\'Date\'].dt.year == latest_year\n    is_q3 = plot_df[\'Is_Third_Quadrant\']\n\n    # 최신 연속 3사분면 구간만 빨간색으로 강조\n    latest_streak_positions = find_latest_true_streak(\n        is_q3,\n        min_length=min_consecutive_days\n    )\n\n    plot_df[\'Is_Capitulation\'] = False\n\n    if latest_streak_positions:\n        plot_df.loc[\n            latest_streak_positions,\n            \'Is_Capitulation\'\n        ] = True\n\n    fig, ax = plt.subplots(figsize=(14, 10))\n\n    x = plot_df[\'KOSPI_Return_Pct\']\n    y = plot_df[\'Individual_NetBuy_Trillion\']\n\n    # 축 범위를 데이터에 맞게 대칭적으로 설정\n    x_limit = max(5, np.ceil(np.nanmax(np.abs(x)) / 5) * 5)\n    y_limit = max(2, np.ceil(np.nanmax(np.abs(y)) / 2) * 2)\n\n    ax.set_xlim(-x_limit, x_limit)\n    ax.set_ylim(-y_limit, y_limit)\n\n    # 3사분면 음영\n    ax.axvspan(\n        -x_limit,\n        0,\n        ymin=0,\n        ymax=0.5,\n        color=\'#FFCDD2\',\n        alpha=0.45,\n        zorder=0\n    )\n\n    # 기준선\n    ax.axhline(0, color=\'gray\', linewidth=1.1)\n    ax.axvline(0, color=\'gray\', linewidth=1.1)\n\n    # 과거 데이터\n    historical = ~is_current_year\n    ax.scatter(\n        plot_df.loc[historical, \'KOSPI_Return_Pct\'],\n        plot_df.loc[historical, \'Individual_NetBuy_Trillion\'],\n        s=90,\n        color=\'#B0BEC5\',\n        edgecolor=\'#546E7A\',\n        linewidth=1.0,\n        alpha=0.82,\n        label=\'Historical Data\',\n        zorder=2\n    )\n\n    # 올해 일반 데이터\n    current_normal = (\n        is_current_year\n        & ~is_q3\n        & ~plot_df[\'Is_Capitulation\']\n    )\n    ax.scatter(\n        plot_df.loc[current_normal, \'KOSPI_Return_Pct\'],\n        plot_df.loc[current_normal, \'Individual_NetBuy_Trillion\'],\n        s=135,\n        color=\'#F57C00\',\n        edgecolor=\'#455A64\',\n        linewidth=1.2,\n        alpha=0.9,\n        label=f\'{latest_year}\',\n        zorder=3\n    )\n\n    # 올해 단발성 3사분면\n    current_q3 = (\n        is_current_year\n        & is_q3\n        & ~plot_df[\'Is_Capitulation\']\n    )\n    ax.scatter(\n        plot_df.loc[current_q3, \'KOSPI_Return_Pct\'],\n        plot_df.loc[current_q3, \'Individual_NetBuy_Trillion\'],\n        s=155,\n        color=\'#FFC107\',\n        edgecolor=\'#455A64\',\n        linewidth=1.3,\n        alpha=0.95,\n        label=\'Third Quadrant (Single Day)\',\n        zorder=4\n    )\n\n    # 개인 항복 후보\n    capitulation = plot_df[\'Is_Capitulation\']\n    ax.scatter(\n        plot_df.loc[capitulation, \'KOSPI_Return_Pct\'],\n        plot_df.loc[capitulation, \'Individual_NetBuy_Trillion\'],\n        s=300,\n        color=\'red\',\n        edgecolor=\'darkred\',\n        linewidth=1.5,\n        alpha=0.95,\n        label=\'Capitulation Candidate\',\n        zorder=6\n    )\n\n    # 전체 데이터 회귀선\n    if len(plot_df) >= 2 and x.nunique() >= 2:\n        slope, intercept = np.polyfit(x, y, 1)\n        x_line = np.linspace(x.min(), x.max(), 200)\n        y_line = slope * x_line + intercept\n\n        corr = x.corr(y)\n\n        ax.plot(\n            x_line,\n            y_line,\n            linestyle=\':\',\n            linewidth=3.0,\n            color=\'#1565C0\',\n            label=f\'Regression Line (Correlation {corr:.2f})\',\n            zorder=1\n        )\n\n    # 올해 중요 날짜와 항복 후보에 날짜 라벨 표시\n    label_mask = (\n        is_current_year\n        & (\n            (plot_df[\'KOSPI_Return_Pct\'].abs() >= LABEL_RETURN_THRESHOLD)\n            | (\n                plot_df[\'Individual_NetBuy_Trillion\'].abs()\n                >= LABEL_FLOW_THRESHOLD\n            )\n            | plot_df[\'Is_Capitulation\']\n        )\n    )\n\n    for _, row in plot_df[label_mask].iterrows():\n        date_label = row[\'Date\'].strftime(\'%b %d\')\n\n        if row[\'Is_Capitulation\']:\n            text_color = \'red\'\n            font_size = 13\n            font_weight = \'bold\'\n        elif row[\'Is_Third_Quadrant\']:\n            text_color = \'#8D6E00\'\n            font_size = 10\n            font_weight = \'bold\'\n        else:\n            text_color = \'#E65100\'\n            font_size = 10\n            font_weight = \'bold\'\n\n        # 점 위치에 따라 라벨 방향 자동 조절\n        x_offset = 8 if row[\'KOSPI_Return_Pct\'] >= 0 else -8\n        y_offset = 10 if row[\'Individual_NetBuy_Trillion\'] >= 0 else -14\n        horizontal_alignment = (\n            \'left\'\n            if x_offset > 0\n            else \'right\'\n        )\n\n        ax.annotate(\n            date_label,\n            xy=(\n                row[\'KOSPI_Return_Pct\'],\n                row[\'Individual_NetBuy_Trillion\']\n            ),\n            xytext=(x_offset, y_offset),\n            textcoords=\'offset points\',\n            ha=horizontal_alignment,\n            va=\'bottom\' if y_offset > 0 else \'top\',\n            fontsize=font_size,\n            fontweight=font_weight,\n            color=text_color,\n            zorder=7\n        )\n\n    ax.text(\n        -x_limit * 0.92,\n        -y_limit * 0.88,\n        \'Third Quadrant\\nKOSPI Down + Individuals Net Selling\',\n        color=\'red\',\n        fontsize=15,\n        fontweight=\'bold\',\n        ha=\'left\',\n        va=\'bottom\'\n    )\n\n    latest_row = plot_df.iloc[-1]\n    latest_date = latest_row[\'Date\'].strftime(\'%Y-%m-%d\')\n\n    if latest_row[\'Is_Capitulation\']:\n        status = (\n            f\'Capitulation candidate: \'\n            f\'{int(plot_df["Is_Capitulation"].sum())} consecutive trading days in Q3\'\n        )\n    elif latest_row[\'Is_Third_Quadrant\']:\n        status = \'Entered Q3: confirmation requires another day\'\n    else:\n        status = \'No individual capitulation signal\'\n\n    ax.set_title(\n        \'KOSPI Daily Return vs Individual Net Buying\\n\'\n        f\'As of {latest_date} | {status}\',\n        fontsize=16,\n        fontweight=\'bold\'\n    )\n\n    ax.set_xlabel(\'KOSPI Daily Return (%)\', fontsize=12)\n    ax.set_ylabel(\'Individual Net Buying (KRW Trillion)\', fontsize=12)\n    ax.grid(True, linestyle=\':\', alpha=0.35)\n    ax.legend(loc=\'best\', frameon=True)\n\n    plt.tight_layout()\n    plt.show()\n\n    return plot_df\n\n\ncapitulation_result = plot_individual_capitulation(\n    individual_flow,\n    display_months=CAPITULATION_DISPLAY_MONTHS,\n    min_consecutive_days=CAPITULATION_MIN_CONSECUTIVE_DAYS\n)\n\n\n# ============================================================\n# 17) 개인 항복 최신 상태 출력\n# ============================================================\n\ndef print_capitulation_status(\n    result_df,\n    min_consecutive_days=2\n):\n    if result_df is None or result_df.empty:\n        print(\'개인 항복 상태: 계산 가능한 데이터가 없습니다.\')\n        return\n\n    latest = result_df.iloc[-1]\n\n    # 마지막 날짜까지 이어진 현재 3사분면 연속 일수 계산\n    current_streak = 0\n\n    for flag in result_df[\'Is_Third_Quadrant\'].iloc[::-1]:\n        if bool(flag):\n            current_streak += 1\n        else:\n            break\n\n    print(\'=\' * 60)\n    print(\'개인 수급 Capitulation(항복) 최신 상태\')\n    print(\'=\' * 60)\n    print(f"기준일: {latest[\'Date\'].strftime(\'%Y-%m-%d\')}")\n    print(f"KOSPI 일간 수익률: {latest[\'KOSPI_Return_Pct\']:.2f}%")\n    print(\n        \'개인 순매수대금: \'\n        f"{latest[\'Individual_NetBuy_Trillion\']:.2f}조원"\n    )\n    print(f\'현재 3사분면 연속 일수: {current_streak}거래일\')\n\n    if current_streak >= min_consecutive_days:\n        print(\'판정: 개인 항복(Capitulation) 후보 발생\')\n        print(\n            \'해석: 지수 하락과 개인 순매도가 \'\n            f\'{current_streak}거래일 연속 동반되었습니다.\'\n        )\n    elif current_streak == 1:\n        print(\'판정: 3사분면 진입, 하루 더 확인 필요\')\n    else:\n        print(\'판정: 개인 항복 신호 없음\')\n\n\nprint_capitulation_status(\n    capitulation_result,\n    min_consecutive_days=CAPITULATION_MIN_CONSECUTIVE_DAYS\n)\n'
 
 def run_korea_fear_greed(excel_bytes):
@@ -2905,10 +3173,10 @@ def render_korea_fear_greed_result(r):
 # 안전한 세션 상태 초기화: 배포/재시작/기존 브라우저 세션에서도 KeyError 방지
 _SAFE_STATE_DEFAULTS = {
     "liq_result": None, "fg_result": None, "canary_result": None, "trend_result": None,
-    "rotation_result": None, "ai_result": None, "jp_tw_market_result": None, "us_sector_result": None, "kr_sector_result": None, "kr_fg_result": None,
+    "rotation_result": None, "ai_result": None, "jp_tw_market_result": None, "us_sector_result": None, "kr_sector_result": None, "kr_fg_result": None, "kr_sio_result": None,
     "tw_revenue_result": None, "kr_monthly_result": None, "us_monthly_result": None,
     "liq_updated": None, "fg_updated": None, "canary_updated": None, "trend_updated": None,
-    "rotation_updated": None, "ai_updated": None, "jp_tw_market_updated": None, "us_sector_updated": None, "kr_sector_updated": None, "kr_fg_updated": None,
+    "rotation_updated": None, "ai_updated": None, "jp_tw_market_updated": None, "us_sector_updated": None, "kr_sector_updated": None, "kr_fg_updated": None, "kr_sio_updated": None,
     "tw_revenue_updated": None, "kr_monthly_updated": None, "us_monthly_updated": None,
 }
 for _k, _v in _SAFE_STATE_DEFAULTS.items():
@@ -2920,6 +3188,7 @@ PAGE_STORAGE_KEY = {
     "미국 피어앤그리드 오실레이터": "fg",
     "미국 위험신호": "canary",
     "한국 피어앤그리드 오실레이터": "kr_fg",
+    "한국 과매도 과매수 점검": "kr_sio",
     "AI하드웨어 주가 모멘텀 점검": "ai",
     "일본과 대만 시세점검": "jp_tw_market",
     "대만 월별 매출": "tw_revenue",
@@ -3702,6 +3971,46 @@ if ACTIVE_PAGE == "한국 ETF 소라티노 및 상대강도":
     else:
         st.error("한국 ETF 소라티노·상대강도 계산 오류")
         st.code(r[2][-16000:],language="text")
+
+
+
+# ============================================================
+# 한국 SIO 과매도·과매수: 관리자 엑셀 업로드형
+# ============================================================
+if ACTIVE_PAGE == "한국 과매도 과매수 점검":
+    st.header("한국 과매도 과매수 점검")
+    st.caption("SIO · 코스피200 / 코스닥150 / 코스피대형주 시장 내부 강도")
+
+    if IS_ADMIN:
+        sio_file = st.file_uploader(
+            "📂 SIO 기초데이터 최신 엑셀 업로드",
+            type=["xlsx"],
+            key="kr_sio_excel",
+            help="날짜 시트(예: 20261016 또는 2026-10-16)를 계속 추가하면, 다시 업로드·계산할 때 시계열이 자동으로 늘어납니다.",
+        )
+        if sio_file is not None:
+            st.caption(f"선택 파일: {sio_file.name}")
+            if st.button("▶ 업로드한 엑셀로 SIO 계산 · 저장", key="run_kr_sio"):
+                with st.spinner("종목군별 SIO 계산 중..."):
+                    try:
+                        result = run_korea_sio(sio_file.getvalue())
+                        st.session_state["kr_sio_result"] = result
+                        st.session_state["kr_sio_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        save_ok, save_msg = persist_current_result("kr_sio")
+                        if save_ok:
+                            st.success(f"계산 + GitHub 영구저장 완료 · {save_msg}")
+                    except Exception as e:
+                        st.error("SIO 계산 중 오류가 발생해 기존 저장 결과는 덮어쓰지 않았습니다.")
+                        st.code(traceback.format_exc()[-12000:], language="text")
+    else:
+        st.caption("최신 저장 결과를 조회하는 화면입니다. 방문자 접속으로 엑셀을 읽거나 다시 계산하지 않습니다.")
+
+    updated_caption("kr_sio")
+    r = st.session_state.get("kr_sio_result")
+    if r is None:
+        st.info("저장된 SIO 결과가 없습니다. 관리자가 SIO 기초데이터 엑셀을 업로드해 한 번 계산·저장하면 이후 접속에서도 그대로 유지됩니다.")
+    else:
+        render_korea_sio_result(r)
 
 
 # ============================================================
