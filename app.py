@@ -10,6 +10,7 @@ import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+# v11.43: 주도주·업종에 한국 일별 수급 동향 점검 추가 · KRX 매수대금/시총대비 Top50
 # v11.42: 시장지표 5번째 한국 과매도 과매수 점검(SIO) 추가 · 날짜 시트 자동 인식
 # v11.41: 미국 월단위 V8.1 52개 ETF + SUPER70 파라미터 반영
 # v11.40: 국내/미국 월단위 리밸런싱을 HTS 직접 수집 ETF 엑셀 기반 코드로 교체
@@ -1763,6 +1764,7 @@ NAV_GROUPS = {
         "미국 52주 신고가 전략 점검",
         "미국 ETF 소라티노 및 상대강도",
         "한국 ETF 소라티노 및 상대강도",
+        "한국 일별 수급 동향 점검",
         "국내시장 월단위 리밸런싱 투자전략",
         "미국시장 월단위 리밸런싱 투자전략",
     ],
@@ -1773,7 +1775,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.42")
+    st.caption("Market Dashboard · LIVE v11.43")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -1884,6 +1886,10 @@ PAGE_GUIDES = {
         "why": "국내 업종 ETF 중 KOSPI보다 강하면서 하락 위험 대비 성과가 좋은 업종을 찾기 위한 화면입니다. 단순 등락률보다 '주도력의 질'과 시장 내부 확산 정도를 같이 확인할 수 있습니다.",
         "check": "변동성 조정 모멘텀은 이평선 조건 없는 순위 하나만 보고, Sortino는 10일선·20일선·10주선 이상 조건을 각각 확인합니다. 여기에 Mansfield RS, KOSPI 대비 RS, Breadth, 쏠림, 정배열과 52주 신고가 전략을 함께 봅니다.",
     },
+    "한국 일별 수급 동향 점검": {
+        "why": "KRX의 사모·투신·연기금·외국인 실제 매수대금을 종목별 시가총액과 함께 비교해, 당일 어떤 종목에 자금이 강하게 들어왔는지 확인하는 화면입니다. 순매수가 아니라 각 투자주체의 거래대금_매수를 기준으로 봅니다.",
+        "check": "시총대비 순위는 매수대금 ÷ 시가총액으로 작은 종목에 들어온 자금의 강도까지 비교하고, 절대매수금액 순위는 실제 매수 규모가 큰 종목을 봅니다. 사모·투신·연기금 평균순위는 세 기관의 시총대비 순위를 단순 평균한 값이며 외국인은 포함하지 않습니다. 각 표는 50등 이내 종목만 표시합니다.",
+    },
     "국내시장 월단위 리밸런싱 투자전략": {
         "why": "국내 업종지수의 Breadth와 KOSPI 대비 상대강도를 이용해 월말마다 추세·비추세·회복·역추세 구간을 구분하고, 다음 달의 투자비중과 업종을 정하는 전략입니다.",
         "check": "V2.3 기준 Breadth 구간, KOSPI 252일 낙폭, 가격 기반 Fear & Greed, 비추세 Top3 평균 RS와 최종 투자비중을 확인합니다. 월말 신호이므로 일중 변동보다 마지막 월말 신호와 다음 적용일을 중심으로 봅니다.",
@@ -1903,7 +1909,7 @@ if _guide:
     st.caption("※ 하나의 지표만으로 매수·매도를 결정하기보다, 서로 다른 데이터가 같은 방향을 가리키는지 확인하는 점검용 화면입니다.")
 
 # 수동 업데이트 전용 상태
-for _k in ["liq","fg","canary","trend","rotation","ai","jp_tw_market","us_sector","kr_sector","kr_sio","kr_monthly","us_monthly"]:
+for _k in ["liq","fg","canary","trend","rotation","ai","jp_tw_market","us_sector","kr_sector","kr_flow","kr_sio","kr_monthly","us_monthly"]:
     st.session_state.setdefault(_k+"_result", None)
     st.session_state.setdefault(_k+"_updated", None)
 
@@ -2920,6 +2926,215 @@ def _sio_calculate(daily, groups):
     return results
 
 
+
+# ============================================================
+# 한국 일별 수급 동향: KRX 업로드형
+# - 입력: 사모/투신/연기금/외국인/시가총액/코스피업종/코스닥업종 7개 시트
+# - 순매수가 아니라 거래대금_매수 기준
+# - 대시보드에는 요청한 Top50 표만 저장/표시
+# ============================================================
+def run_korea_daily_flow(excel_bytes):
+    from io import BytesIO
+    from collections import defaultdict
+    from openpyxl import load_workbook
+
+    required = {'사모', '투신', '연기금', '외국인', '시가총액', '코스피업종', '코스닥업종'}
+    src = load_workbook(BytesIO(excel_bytes), read_only=True, data_only=True)
+    if not required.issubset(set(src.sheetnames)):
+        missing = sorted(required - set(src.sheetnames))
+        src.close()
+        raise ValueError('필요한 시트가 없습니다: ' + ', '.join(missing))
+
+    def code6(x):
+        if x is None:
+            return ''
+        if isinstance(x, (int, float)) and float(x).is_integer():
+            s = str(int(x))
+        else:
+            s = str(x).strip().upper()
+            if s.endswith('.0') and s[:-2].isdigit():
+                s = s[:-2]
+        return s.zfill(6)
+
+    def as_won(x):
+        if x is None or x == '':
+            return 0.0
+        if isinstance(x, str):
+            x = x.replace(',', '').strip()
+        try:
+            return float(x)
+        except Exception:
+            return 0.0
+
+    def as_rows(sheet, needed):
+        it = sheet.iter_rows(values_only=True)
+        headers = [str(h).strip() if h is not None else '' for h in next(it)]
+        missing = set(needed) - set(headers)
+        if missing:
+            raise ValueError(f'{sheet.title} 시트에 필요한 열이 없습니다: {sorted(missing)}')
+        pos = {name: headers.index(name) for name in needed}
+        for row in it:
+            yield {name: row[j] if j < len(row) else None for name, j in pos.items()}
+
+    preferred_ending = re.compile(r'\d*우(?:B|C)?(?:\(전환\))?$')
+    excluded_funds = {'KB발해인프라', '맥쿼리인프라', '맵스리얼티', '이리츠코크렙'}
+    def keep_stock(code, name, market):
+        if market not in {'KOSPI', 'KOSDAQ', 'KOSDAQ GLOBAL'}:
+            return False
+        if '스팩' in name or name.endswith('리츠') or name in excluded_funds:
+            return False
+        if preferred_ending.search(name) and code[-1] in '579KL':
+            return False
+        return True
+
+    stocks = {}
+    for r in as_rows(src['시가총액'], ['종목코드', '종목명', '시장구분', '시가총액']):
+        code = code6(r['종목코드'])
+        name = str(r['종목명'] or '').strip()
+        market = str(r['시장구분'] or '').strip().upper()
+        cap = as_won(r['시가총액'])
+        if code and name and cap > 0 and keep_stock(code, name, market):
+            stocks[code] = (name, market, cap)
+    if not stocks:
+        src.close()
+        raise ValueError('시가총액 시트에서 분석할 보통주를 찾지 못했습니다.')
+
+    industry = {}
+    for sheet_name in ['코스피업종', '코스닥업종']:
+        for r in as_rows(src[sheet_name], ['종목코드', '업종명']):
+            code = code6(r['종목코드'])
+            sector = str(r['업종명'] or '').strip()
+            if code and sector:
+                industry[code] = sector
+
+    who_list = ['사모', '투신', '연기금', '외국인']
+    buys = {w: defaultdict(float) for w in who_list}
+    for who in who_list:
+        for r in as_rows(src[who], ['종목코드', '거래대금_매수']):
+            code = code6(r['종목코드'])
+            if code in stocks:
+                buys[who][code] += as_won(r['거래대금_매수'])
+    src.close()
+
+    codes = sorted(stocks)
+    def make_rank_map(values):
+        result = {}
+        for position, value in enumerate(sorted(values, reverse=True), 1):
+            if value not in result:
+                result[value] = position
+        return result
+
+    rank_cap, rank_amt = {}, {}
+    for who in who_list:
+        ratios = [buys[who][c] / stocks[c][2] for c in codes]
+        amounts = [buys[who][c] for c in codes]
+        rm_ratio = make_rank_map(ratios)
+        rm_amt = make_rank_map(amounts)
+        rank_cap[who] = {c: rm_ratio[buys[who][c] / stocks[c][2]] for c in codes}
+        rank_amt[who] = {c: rm_amt[buys[who][c]] for c in codes}
+
+    inst = ['사모', '투신', '연기금']
+    avg_cap = {c: sum(rank_cap[w][c] for w in inst) / 3.0 for c in codes}
+
+    rows = []
+    for c in codes:
+        name, market, cap = stocks[c]
+        row = {
+            '종목코드': c,
+            '종목명': name,
+            '업종': industry.get(c, ''),
+            '시장': market,
+            '시가총액(억원)': cap / 1e8,
+            '기관 시총대비 평균순위': avg_cap[c],
+        }
+        for who in who_list:
+            amt = buys[who][c]
+            row[f'{who} 매수(억원)'] = amt / 1e8
+            row[f'{who} 시총대비(%)'] = (amt / cap) * 100 if cap else np.nan
+            row[f'{who} 시총대비 순위'] = rank_cap[who][c]
+            row[f'{who} 절대매수 순위'] = rank_amt[who][c]
+        rows.append(row)
+    all_df = pd.DataFrame(rows)
+
+    def top_avg():
+        cols = ['종목코드','종목명','업종','시가총액(억원)',
+                '사모 시총대비 순위','투신 시총대비 순위','연기금 시총대비 순위','기관 시총대비 평균순위']
+        d = all_df.loc[all_df['기관 시총대비 평균순위'] <= 50, cols].copy()
+        return d.sort_values(['기관 시총대비 평균순위','시가총액(억원)'], ascending=[True,False]).reset_index(drop=True)
+
+    def top_ratio(who):
+        rank_col = f'{who} 시총대비 순위'
+        cols = ['종목코드','종목명','업종','시가총액(억원)',f'{who} 매수(억원)',f'{who} 시총대비(%)',rank_col]
+        d = all_df.loc[all_df[rank_col] <= 50, cols].copy()
+        return d.sort_values([rank_col, f'{who} 시총대비(%)'], ascending=[True,False]).reset_index(drop=True)
+
+    def top_amount(who):
+        rank_col = f'{who} 절대매수 순위'
+        cols = ['종목코드','종목명','업종','시가총액(억원)',f'{who} 매수(억원)',rank_col]
+        d = all_df.loc[all_df[rank_col] <= 50, cols].copy()
+        return d.sort_values([rank_col, f'{who} 매수(억원)'], ascending=[True,False]).reset_index(drop=True)
+
+    return {
+        'stock_count': len(codes),
+        'missing_industry': int(sum(not industry.get(c) for c in codes)),
+        'institution_avg_cap_top50': top_avg(),
+        'private_cap_top50': top_ratio('사모'),
+        'trust_cap_top50': top_ratio('투신'),
+        'pension_cap_top50': top_ratio('연기금'),
+        'foreign_cap_top50': top_ratio('외국인'),
+        'private_amt_top50': top_amount('사모'),
+        'trust_amt_top50': top_amount('투신'),
+        'pension_amt_top50': top_amount('연기금'),
+        'foreign_amt_top50': top_amount('외국인'),
+    }
+
+
+def _style_kr_flow_df(df):
+    if df is None or len(df) == 0:
+        return df
+    fmt = {}
+    for c in df.columns:
+        if c == '시가총액(억원)' or c.endswith('매수(억원)'):
+            fmt[c] = '{:,.2f}'
+        elif c.endswith('시총대비(%)'):
+            fmt[c] = '{:.5f}'
+        elif '평균순위' in c:
+            fmt[c] = '{:.2f}'
+        elif c.endswith('순위'):
+            fmt[c] = '{:,.0f}'
+    try:
+        return df.style.format(fmt).background_gradient(subset=[c for c in df.columns if c.endswith('순위') or '평균순위' in c], cmap='Reds_r')
+    except Exception:
+        return df
+
+
+def render_korea_daily_flow(result):
+    if not isinstance(result, dict):
+        st.error('저장된 수급 결과 형식을 읽을 수 없습니다.')
+        return
+    st.caption(f"분석대상 보통주 {int(result.get('stock_count',0)):,}개 · 업종 미매칭 {int(result.get('missing_industry',0)):,}개")
+    st.caption('※ 매수대금은 KRX 투자주체별 거래대금_매수 기준이며 순매수가 아닙니다. 순위는 전체 분석 유니버스 내 내림차순 공동순위입니다.')
+
+    sections = [
+        ('1. 사모·투신·연기금 시총대비 평균순위 50등 이내', 'institution_avg_cap_top50'),
+        ('2. 사모 시가총액대비 매수 50등 이내', 'private_cap_top50'),
+        ('3. 투신 시가총액대비 매수 50등 이내', 'trust_cap_top50'),
+        ('4. 연금 시가총액대비 매수 50등 이내', 'pension_cap_top50'),
+        ('5. 외국인 시가총액대비 매수 50등 이내', 'foreign_cap_top50'),
+        ('6. 사모 절대매수금액 50등 이내', 'private_amt_top50'),
+        ('7. 투신 절대매수금액 50등 이내', 'trust_amt_top50'),
+        ('8. 연금 절대매수금액 50등 이내', 'pension_amt_top50'),
+        ('9. 외국인 절대매수금액 50등 이내', 'foreign_amt_top50'),
+    ]
+    for title, key in sections:
+        st.markdown(f'### {title}')
+        df = result.get(key)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            st.dataframe(_style_kr_flow_df(df), use_container_width=True, hide_index=True)
+        else:
+            st.info('조건에 해당하는 종목이 없습니다.')
+
+
 def run_korea_sio(excel_bytes):
     sheets = _sio_xlsx_sheets(excel_bytes)
     groups = _sio_read_categories(sheets)
@@ -3173,10 +3388,10 @@ def render_korea_fear_greed_result(r):
 # 안전한 세션 상태 초기화: 배포/재시작/기존 브라우저 세션에서도 KeyError 방지
 _SAFE_STATE_DEFAULTS = {
     "liq_result": None, "fg_result": None, "canary_result": None, "trend_result": None,
-    "rotation_result": None, "ai_result": None, "jp_tw_market_result": None, "us_sector_result": None, "kr_sector_result": None, "kr_fg_result": None, "kr_sio_result": None,
+    "rotation_result": None, "ai_result": None, "jp_tw_market_result": None, "us_sector_result": None, "kr_sector_result": None, "kr_flow_result": None, "kr_fg_result": None, "kr_sio_result": None,
     "tw_revenue_result": None, "kr_monthly_result": None, "us_monthly_result": None,
     "liq_updated": None, "fg_updated": None, "canary_updated": None, "trend_updated": None,
-    "rotation_updated": None, "ai_updated": None, "jp_tw_market_updated": None, "us_sector_updated": None, "kr_sector_updated": None, "kr_fg_updated": None, "kr_sio_updated": None,
+    "rotation_updated": None, "ai_updated": None, "jp_tw_market_updated": None, "us_sector_updated": None, "kr_sector_updated": None, "kr_flow_updated": None, "kr_fg_updated": None, "kr_sio_updated": None,
     "tw_revenue_updated": None, "kr_monthly_updated": None, "us_monthly_updated": None,
 }
 for _k, _v in _SAFE_STATE_DEFAULTS.items():
@@ -3195,6 +3410,7 @@ PAGE_STORAGE_KEY = {
     "미국 52주 신고가 전략 점검": "rotation",
     "미국 ETF 소라티노 및 상대강도": "us_sector",
     "한국 ETF 소라티노 및 상대강도": "kr_sector",
+    "한국 일별 수급 동향 점검": "kr_flow",
     "국내시장 월단위 리밸런싱 투자전략": "kr_monthly",
     "미국시장 월단위 리밸런싱 투자전략": "us_monthly",
 }
@@ -3971,6 +4187,48 @@ if ACTIVE_PAGE == "한국 ETF 소라티노 및 상대강도":
     else:
         st.error("한국 ETF 소라티노·상대강도 계산 오류")
         st.code(r[2][-16000:],language="text")
+
+
+# ============================================================
+# 한국 일별 수급 동향 점검 · 관리자 KRX 엑셀 업로드형
+# ============================================================
+if ACTIVE_PAGE == "한국 일별 수급 동향 점검":
+    st.subheader("한국 일별 수급 동향 점검")
+    st.caption("KRX 사모·투신·연기금·외국인 매수대금과 시가총액을 이용한 당일 수급 순위")
+    st.caption("필요 시트: 사모 / 투신 / 연기금 / 외국인 / 시가총액 / 코스피업종 / 코스닥업종")
+
+    if IS_ADMIN:
+        flow_file = st.file_uploader(
+            "📂 거래소 수급데이터 및 시가총액 엑셀 업로드",
+            type=["xlsx","xlsm"],
+            key="kr_flow_excel",
+            help="KRX 원본 7개 시트를 가진 파일을 업로드합니다. 결과 엑셀을 다시 올릴 필요는 없습니다.",
+        )
+        if flow_file is None:
+            st.info("관리자 전용: 거래소 수급·시가총액 파일을 선택한 뒤 계산 버튼을 누르세요.")
+        else:
+            st.caption(f"선택 파일: {flow_file.name}")
+            if st.button("▶ 한국 일별 수급 순위 계산 · 저장", key="run_kr_flow"):
+                with st.spinner("사모·투신·연기금·외국인 매수대금과 시가총액 순위를 계산 중..."):
+                    try:
+                        result = run_korea_daily_flow(flow_file.getvalue())
+                        st.session_state["kr_flow_result"] = result
+                        st.session_state["kr_flow_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        ok, msg = persist_current_result("kr_flow")
+                        if ok:
+                            st.success(f"계산 + GitHub 영구저장 완료 · {msg}")
+                    except Exception:
+                        st.error("한국 일별 수급 계산 중 오류가 발생해 기존 저장 결과는 덮어쓰지 않았습니다.")
+                        st.code(traceback.format_exc()[-16000:], language="text")
+    else:
+        st.caption("최신 저장 결과를 조회하는 화면입니다. 방문자 접속으로 엑셀을 읽거나 다시 계산하지 않습니다.")
+
+    updated_caption("kr_flow")
+    r = st.session_state.get("kr_flow_result")
+    if r is None:
+        st.info("저장된 한국 일별 수급 결과가 없습니다. 관리자가 거래소 수급데이터 엑셀을 업로드해 한 번 계산·저장하면 이후 접속에서도 그대로 유지됩니다.")
+    else:
+        render_korea_daily_flow(r)
 
 
 
