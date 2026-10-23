@@ -10,6 +10,7 @@ import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+# v11.45: iPhone·Android 모바일 보기 강화 · safe-area/표/사이드바/1열 레이아웃 보정
 # v11.44: 한국 일별 수급 2파트 재배치 · 기관 평균순위 2종 상위 50개 정확히 표시
 # v11.43: 주도주·업종에 한국 일별 수급 동향 점검 추가 · KRX 매수대금/시총대비 Top50
 # v11.42: 시장지표 5번째 한국 과매도 과매수 점검(SIO) 추가 · 날짜 시트 자동 인식
@@ -682,43 +683,79 @@ div[data-testid="stCode"] pre{
 }
 
 /* ============================================================
-   v11.18 모바일 반응형
+   v11.45 모바일 반응형 강화
    - 데스크톱(769px 이상)은 기존 화면 그대로
-   - 모바일(768px 이하)에서만 자동 적용
+   - iPhone Safari / Android Chrome 공통 대응
+   - 본문 가림, 사이드바 과폭, 표/컬럼 넘침, 하단 브라우저 UI 여백 보정
    ============================================================ */
 @media (max-width: 768px) {
-  /* 본문 여백/폭 */
-  .block-container{
-    padding-top:.55rem !important;
-    padding-left:.75rem !important;
-    padding-right:.75rem !important;
-    padding-bottom:2rem !important;
-    max-width:100% !important;
+  /* 모든 요소가 padding 때문에 화면 밖으로 튀어나가지 않도록 */
+  *, *::before, *::after{
+    box-sizing:border-box !important;
   }
 
-  /* 상단 고정 헤더 공간 최소화 */
+  html, body, .stApp, [data-testid="stAppViewContainer"]{
+    width:100% !important;
+    max-width:100% !important;
+    overflow-x:hidden !important;
+  }
+
+  /* iPhone 노치/홈 인디케이터 + Android 브라우저 하단 UI 여유 */
+  .block-container{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+    padding-top:.55rem !important;
+    padding-left:max(.50rem, env(safe-area-inset-left)) !important;
+    padding-right:max(.50rem, env(safe-area-inset-right)) !important;
+    padding-bottom:calc(3.25rem + env(safe-area-inset-bottom)) !important;
+    overflow-x:hidden !important;
+  }
+
+  /* Streamlit 내부 부모도 폭을 넘지 않게 */
+  [data-testid="stMain"],
+  [data-testid="stMainBlockContainer"],
+  [data-testid="stVerticalBlock"],
+  [data-testid="stVerticalBlockBorderWrapper"],
+  .element-container{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+  }
+
+  /* 상단 헤더는 작게, safe-area는 유지 */
   [data-testid="stHeader"]{
-    height:2.6rem !important;
+    height:2.7rem !important;
+    min-height:2.7rem !important;
+    padding-left:env(safe-area-inset-left) !important;
+    padding-right:env(safe-area-inset-right) !important;
   }
 
   /* Hero */
   .hero{
-    padding:15px 14px !important;
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+    padding:14px 12px !important;
     border-radius:13px !important;
     margin-bottom:10px !important;
+    overflow:hidden !important;
   }
   .hero h1{
-    font-size:1.45rem !important;
+    font-size:1.38rem !important;
     line-height:1.25 !important;
     word-break:keep-all !important;
+    overflow-wrap:anywhere !important;
   }
   .hero p{
     font-size:.82rem !important;
     line-height:1.45 !important;
+    overflow-wrap:anywhere !important;
   }
   .youtube-cta{
     display:block !important;
     width:100% !important;
+    max-width:100% !important;
     box-sizing:border-box !important;
     text-align:center !important;
     padding:11px 10px !important;
@@ -726,44 +763,57 @@ div[data-testid="stCode"] pre{
     margin-top:11px !important;
   }
 
-  /* Streamlit columns: 모바일에서는 모두 1열로 */
+  /* 모든 Streamlit columns를 모바일에서는 1열로 */
   [data-testid="stHorizontalBlock"]{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
     flex-direction:column !important;
+    align-items:stretch !important;
     gap:.55rem !important;
   }
-  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]{
+  [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],
+  [data-testid="stHorizontalBlock"] > div{
     width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
     flex:1 1 100% !important;
-    min-width:100% !important;
   }
 
   /* 카드/메트릭 */
   .card{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
     min-height:0 !important;
-    padding:12px 13px !important;
+    padding:12px 12px !important;
     border-radius:11px !important;
+    overflow:hidden !important;
   }
-  .label{font-size:.78rem !important;}
-  .value{font-size:1.28rem !important;}
-  .sub{font-size:.73rem !important;}
+  .label{font-size:.78rem !important; overflow-wrap:anywhere !important;}
+  .value{font-size:1.24rem !important; overflow-wrap:anywhere !important;}
+  .sub{font-size:.73rem !important; overflow-wrap:anywhere !important;}
 
   [data-testid="stMetric"]{
+    width:100% !important;
+    min-width:0 !important;
     padding:.4rem .1rem !important;
   }
-  [data-testid="stMetricLabel"]{
-    font-size:.78rem !important;
-  }
-  [data-testid="stMetricValue"]{
-    font-size:1.35rem !important;
-  }
+  [data-testid="stMetricLabel"]{font-size:.78rem !important;}
+  [data-testid="stMetricValue"]{font-size:1.30rem !important; overflow-wrap:anywhere !important;}
 
   /* 제목/본문 */
-  h1{font-size:1.55rem !important;}
-  h2{font-size:1.30rem !important;}
-  h3{font-size:1.10rem !important;}
+  h1{font-size:1.48rem !important; line-height:1.25 !important;}
+  h2{font-size:1.24rem !important; line-height:1.30 !important;}
+  h3{font-size:1.07rem !important; line-height:1.35 !important;}
+  h4{font-size:.98rem !important; line-height:1.38 !important;}
   p, li, label{
-    font-size:.90rem !important;
+    font-size:.88rem !important;
     line-height:1.48 !important;
+  }
+  h1,h2,h3,h4,p,li,label,span,small,strong{
+    max-width:100% !important;
+    overflow-wrap:anywhere !important;
   }
 
   /* 버튼: 손가락으로 누르기 쉽게 */
@@ -771,12 +821,17 @@ div[data-testid="stCode"] pre{
   [data-testid="stLinkButton"] a,
   a[data-testid="stLinkButton"]{
     width:100% !important;
+    max-width:100% !important;
     min-height:44px !important;
-    font-size:.90rem !important;
+    padding:.55rem .65rem !important;
+    font-size:.88rem !important;
+    line-height:1.35 !important;
     white-space:normal !important;
+    overflow-wrap:anywhere !important;
   }
 
-  /* 그래프/이미지는 화면 폭에 맞춤 */
+  /* 그래프/이미지/iframe은 화면 폭 안쪽으로 */
+  [data-testid="stImage"],
   [data-testid="stImage"] img,
   [data-testid="stImage"] svg,
   .stPlotlyChart,
@@ -790,82 +845,193 @@ div[data-testid="stCode"] pre{
     height:auto !important;
   }
 
-  /* 표는 억지로 축소하지 않고 좌우 스크롤 */
+  /* 표: 페이지 전체가 옆으로 밀리지 않고 표 안에서만 좌우 스크롤 */
   [data-testid="stDataFrame"],
   [data-testid="stTable"],
   .colab-table-wrap{
+    display:block !important;
     width:100% !important;
     max-width:100% !important;
+    min-width:0 !important;
     overflow-x:auto !important;
+    overflow-y:hidden !important;
     -webkit-overflow-scrolling:touch !important;
+    overscroll-behavior-x:contain !important;
+    touch-action:pan-x pan-y !important;
+  }
+  [data-testid="stDataFrame"] > div,
+  [data-testid="stTable"] > div{
+    max-width:100% !important;
+    min-width:0 !important;
   }
   table.colab-static-table{
-    font-size:.76rem !important;
+    width:max-content !important;
+    min-width:100% !important;
+    font-size:.74rem !important;
   }
   table.colab-static-table th,
   table.colab-static-table td{
     padding:4px 6px !important;
+    white-space:nowrap !important;
+  }
+
+  /* 탭이 많아도 화면 밖으로 밀리지 않고 탭 줄만 스크롤 */
+  [data-baseweb="tab-list"]{
+    max-width:100% !important;
+    overflow-x:auto !important;
+    overflow-y:hidden !important;
+    -webkit-overflow-scrolling:touch !important;
+    scrollbar-width:thin !important;
+  }
+  [data-baseweb="tab"]{
+    flex:0 0 auto !important;
+    white-space:nowrap !important;
   }
 
   /* Colab/계산 상세 텍스트 */
   .colab-output{
-    font-size:.76rem !important;
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+    font-size:.74rem !important;
     line-height:1.42 !important;
     overflow-x:auto !important;
+    -webkit-overflow-scrolling:touch !important;
+  }
+  div[data-testid="stCode"]{
+    width:100% !important;
     max-width:100% !important;
+    min-width:0 !important;
   }
   div[data-testid="stCode"] pre,
   div[data-testid="stCode"] code,
   div[data-testid="stCode"] span{
-    font-size:.76rem !important;
+    font-size:.74rem !important;
     line-height:1.42 !important;
   }
   div[data-testid="stCode"] pre{
     max-width:100% !important;
     overflow-x:auto !important;
+    -webkit-overflow-scrolling:touch !important;
+  }
+
+  /* 월단위 확정/임시 패널도 모바일 1열 */
+  .td-monthly-panel{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+    padding:13px 11px 10px 11px !important;
+  }
+  .td-monthly-grid{grid-template-columns:1fr !important;}
+  .td-monthly-row{display:block !important;border-bottom:1px solid rgba(160,180,210,.12);padding:7px 2px;}
+  .td-monthly-label,.td-monthly-value{display:block !important;border:0 !important;padding:2px 5px !important;}
+  .td-monthly-label{font-size:.79rem !important;}
+  .td-monthly-value{font-size:.88rem !important;overflow-wrap:anywhere !important;}
+  .td-monthly-signal-pre{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+    padding:12px 10px !important;
+    font-size:.74rem !important;
+    line-height:1.50 !important;
+    white-space:pre-wrap !important;
+    overflow-x:auto !important;
   }
 
   /* Expander */
+  [data-testid="stExpander"],
   [data-testid="stExpander"] details{
-    border-radius:9px !important;
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
   }
+  [data-testid="stExpander"] details{border-radius:9px !important;}
   [data-testid="stExpander"] summary{
     min-height:42px !important;
+    overflow-wrap:anywhere !important;
   }
 
-  /* 입력창 */
+  /* 입력창: 16px 이상으로 iPhone Safari 자동 확대 방지 */
   .stTextInput input,
   .stTextArea textarea,
-  div[data-baseweb="select"] > div{
+  div[data-baseweb="select"] > div,
+  div[data-baseweb="base-input"] > div{
+    width:100% !important;
+    max-width:100% !important;
     min-height:42px !important;
-    font-size:16px !important; /* iPhone 자동 확대 방지 */
+    font-size:16px !important;
   }
 
   /* 파일 업로더 */
+  [data-testid="stFileUploader"],
   [data-testid="stFileUploader"] section{
-    padding:.75rem !important;
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
+  }
+  [data-testid="stFileUploader"] section{
+    padding:.70rem !important;
+  }
+  [data-testid="stFileUploader"] button{
+    max-width:100% !important;
+    min-height:44px !important;
+    white-space:normal !important;
   }
 
-  /* 사이드바: 모바일에서는 화면 대부분을 활용하되 너무 넓지 않게 */
+  /* 사이드바: iPhone/Android에서 본문을 과도하게 덮지 않게 제한 */
   [data-testid="stSidebar"]{
-    width:min(88vw, 340px) !important;
-    min-width:min(88vw, 340px) !important;
+    width:min(86vw, 326px) !important;
+    min-width:min(86vw, 326px) !important;
+    max-width:min(86vw, 326px) !important;
+    height:100dvh !important;
+    max-height:100dvh !important;
+    padding-left:env(safe-area-inset-left) !important;
+    padding-bottom:calc(.75rem + env(safe-area-inset-bottom)) !important;
+    overflow-y:auto !important;
+    overflow-x:hidden !important;
+  }
+  [data-testid="stSidebar"] > div:first-child{
+    width:100% !important;
+    max-width:100% !important;
+    min-width:0 !important;
   }
   [data-testid="stSidebar"] .stButton > button{
     min-height:44px !important;
-    padding:.55rem .65rem !important;
-    font-size:.88rem !important;
+    padding:.52rem .58rem !important;
+    font-size:.85rem !important;
   }
   [data-testid="stSidebar"] [data-testid="stLinkButton"] a{
     min-height:44px !important;
   }
 
-  /* 긴 캡션/주소 줄바꿈 */
+  /* 긴 캡션/주소/종목명 줄바꿈 */
   [data-testid="stCaptionContainer"],
   [data-testid="stMarkdownContainer"]{
+    max-width:100% !important;
+    min-width:0 !important;
     overflow-wrap:anywhere !important;
     word-break:keep-all !important;
   }
+}
+
+/* 작은 폰(아이폰 SE·소형 안드로이드) 추가 압축 */
+@media (max-width: 430px) {
+  .block-container{
+    padding-left:max(.42rem, env(safe-area-inset-left)) !important;
+    padding-right:max(.42rem, env(safe-area-inset-right)) !important;
+  }
+  .hero{padding:12px 10px !important;}
+  .hero h1{font-size:1.28rem !important;}
+  h1{font-size:1.38rem !important;}
+  h2{font-size:1.18rem !important;}
+  h3{font-size:1.03rem !important;}
+  p,li,label{font-size:.85rem !important;}
+  [data-testid="stSidebar"]{
+    width:min(88vw, 310px) !important;
+    min-width:min(88vw, 310px) !important;
+    max-width:min(88vw, 310px) !important;
+  }
+  table.colab-static-table{font-size:.71rem !important;}
 }
 
 </style>
@@ -1776,7 +1942,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.44")
+    st.caption("Market Dashboard · LIVE v11.45")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
