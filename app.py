@@ -28,18 +28,13 @@ class _LazyPyplot:
 plt = _LazyPyplot()
 
 
-def _real_pyplot():
-    """지연로딩 wrapper 뒤의 실제 matplotlib.pyplot 모듈을 반환."""
-    return plt._load() if isinstance(plt, _LazyPyplot) else plt
-
-
 def _lazy_yfinance():
     """yfinance는 관리자/카나리아 실제 계산 때만 import."""
     import yfinance as _yf
     return _yf
 
 # v11.46: 미국 월단위 메뉴를 52주 전략 아래로 이동 · 새 HTS 티커형 Excel · 52개 매매 유니버스만 사용 · 상대강도 PDF 제외
-# v11.48: DataFrame JS 오류 우회(정적 HTML 표) · matplotlib 지연로딩 그래프 캡처 수정
+# v11.49: v11.47 안정 베이스 · DataFrame JS 우회 최소패치 · 그래프 캡처 국소 수정
 # v11.47: 경량화 · yfinance/matplotlib 지연로딩 · GitHub gzip 스트리밍 · raw cache 축소 · kr_flow 메모리 해제 보완
 # v11.45: iPhone·Android 모바일 보기 강화 · safe-area/표/사이드바/1열 레이아웃 보정
 # v11.44: 한국 일별 수급 2파트 재배치 · 기관 평균순위 2종 상위 50개 정확히 표시
@@ -1094,13 +1089,6 @@ div[data-testid="stCode"] pre{
   table.colab-static-table{font-size:.71rem !important;}
 }
 
-/* v11.48 정적표: Streamlit DataFrame JS 모듈을 사용하지 않음 */
-.td-static-table-wrap{width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:4px 0 18px 0}
-.td-static-table-wrap table{border-collapse:collapse;font-size:.86rem;white-space:nowrap;background:transparent;color:var(--td-text)}
-.td-static-table-wrap th,.td-static-table-wrap td{border:1px solid rgba(128,128,128,.28);padding:5px 8px;text-align:right}
-.td-static-table-wrap th{font-weight:700;background:rgba(128,128,128,.10)}
-@media (max-width:768px){.td-static-table-wrap table{font-size:.73rem}.td-static-table-wrap th,.td-static-table-wrap td{padding:4px 6px}}
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -1114,7 +1102,7 @@ def run_source(source):
             shown.append(obj.data if hasattr(obj,"data") else obj)
         except Exception:
             shown.append(str(obj))
-    _mpl = _real_pyplot()
+    _mpl = plt._load() if hasattr(plt, "_load") else plt
     old_show=_mpl.show
     def _show(*args, **kwargs):
         try:
@@ -1339,7 +1327,7 @@ def run_korea_sector(excel_bytes):
         if ev is not None:
             events.append(ev)
 
-    _mpl = _real_pyplot()
+    _mpl = plt._load() if hasattr(plt, "_load") else plt
     old_show = _mpl.show
     def _show(*args, **kwargs):
         try:
@@ -1369,18 +1357,13 @@ def run_korea_sector(excel_bytes):
         _mpl.close("all")
 
 
-def _render_static_df(obj, max_rows=80, max_cols=30, hide_index=False):
-    """
-    Streamlit DataFrame JS chunk를 사용하지 않는 정적 HTML 표 렌더러.
-    DataFrame / Series / pandas Styler를 지원한다.
-    """
+def _render_static_df(obj, hide_index=False, max_rows=80, max_cols=30):
+    """가벼운 정적 HTML 표. DataFrame/Series/Styler 지원."""
     if obj is None:
         return
     try:
         if isinstance(obj, pd.Series):
             obj = obj.to_frame()
-
-        # pandas Styler: 기존 셀 색상/format을 HTML에 보존
         if obj.__class__.__name__ == "Styler" and hasattr(obj, "to_html"):
             try:
                 if hide_index and hasattr(obj, "hide"):
@@ -1390,24 +1373,13 @@ def _render_static_df(obj, max_rows=80, max_cols=30, hide_index=False):
             html_table = obj.to_html()
         elif isinstance(obj, pd.DataFrame):
             view = obj.iloc[:max_rows, :max_cols]
-            html_table = view.to_html(
-                max_rows=max_rows, max_cols=max_cols, border=0,
-                classes="colab-static-table", index=not hide_index,
-                escape=True, justify="right"
-            )
+            html_table = view.to_html(max_rows=max_rows,max_cols=max_cols,border=0,classes="colab-static-table",index=not hide_index,escape=True,justify="right")
         else:
-            st.write(obj)
-            return
-
-        st.markdown(
-            f'<div class="colab-table-wrap td-static-table-wrap">{html_table}</div>',
-            unsafe_allow_html=True
-        )
+            st.text(str(obj)); return
+        st.markdown(f'<div class="colab-table-wrap">{html_table}</div>', unsafe_allow_html=True)
     except Exception:
-        try:
-            st.write(obj)
-        except Exception:
-            pass
+        try: st.text(str(obj))
+        except Exception: pass
 
 
 def render_korea_sector_colab(payload):
@@ -1492,7 +1464,7 @@ def run_colab_source(source, figure_mode="chartdata", extra_ns=None, capture_nam
         if ev is not None:
             events.append(ev)
 
-    _mpl = _real_pyplot()
+    _mpl = plt._load() if hasattr(plt, "_load") else plt
     old_show = _mpl.show
     def _show(*args, **kwargs):
         try:
@@ -1540,8 +1512,8 @@ def run_colab_source(source, figure_mode="chartdata", extra_ns=None, capture_nam
         _append_text("\n❌ 계산 오류\n" + tb)
         return False, {"colab_events": events}, diagnostics.getvalue()[-20000:], [], []
     finally:
-        plt.show = old_show
-        plt.close("all")
+        _mpl.show = old_show
+        _mpl.close("all")
 
 
 
@@ -1754,7 +1726,7 @@ def run_rotation():
     def _quiet_display(*args, **kwargs):
         return None
 
-    _mpl = _real_pyplot()
+    _mpl = plt._load() if hasattr(plt, "_load") else plt
     old_show = _mpl.show
 
     def _quiet_show(*args, **kwargs):
@@ -1873,8 +1845,8 @@ def run_rotation():
         return False, {"simple_rotation": True}, diagnostics.getvalue()[-20000:], [], []
 
     finally:
-        plt.show = old_show
-        plt.close("all")
+        _mpl.show = old_show
+        _mpl.close("all")
 
 
 def run_us_sector():
@@ -2045,7 +2017,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.47")
+    st.caption("Market Dashboard · LIVE v11.49")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
@@ -3520,7 +3492,7 @@ def run_korea_fear_greed(excel_bytes):
     buf = io.StringIO()
     shown = []
     figs = []
-    _mpl = _real_pyplot()
+    _mpl = plt._load() if hasattr(plt, "_load") else plt
     old_show = _mpl.show
 
     def _display(obj):
