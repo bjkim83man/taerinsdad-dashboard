@@ -1,16 +1,40 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+
+# ============================================================
+# v11.47 경량화: matplotlib은 실제 그래프가 필요한 순간에만 import
+# 첫 접속/표 전용 페이지에서는 무거운 pyplot을 미리 메모리에 올리지 않는다.
+# ============================================================
+class _LazyPyplot:
+    _module = None
+
+    def _load(self):
+        if self._module is None:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as _plt
+            self._module = _plt
+        return self._module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+plt = _LazyPyplot()
+
+
+def _lazy_yfinance():
+    """yfinance는 관리자/카나리아 실제 계산 때만 import."""
+    import yfinance as _yf
+    return _yf
+
 # v11.46: 미국 월단위 메뉴를 52주 전략 아래로 이동 · 새 HTS 티커형 Excel · 52개 매매 유니버스만 사용 · 상대강도 PDF 제외
+# v11.47: 경량화 · yfinance/matplotlib 지연로딩 · GitHub gzip 스트리밍 · raw cache 축소 · kr_flow 메모리 해제 보완
 # v11.45: iPhone·Android 모바일 보기 강화 · safe-area/표/사이드바/1열 레이아웃 보정
 # v11.44: 한국 일별 수급 2파트 재배치 · 기관 평균순위 2종 상위 50개 정확히 표시
 # v11.43: 주도주·업종에 한국 일별 수급 동향 점검 추가 · KRX 매수대금/시총대비 Top50
@@ -46,6 +70,14 @@ def _gh_headers():
     return h
 
 
+@st.cache_resource(show_spinner=False)
+def _github_http_session():
+    """GitHub 호출의 TCP/TLS 연결을 재사용해 메뉴 전환 시 연결 비용을 줄인다."""
+    sess = requests.Session()
+    sess.headers.update(_gh_headers())
+    return sess
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def github_storage_stats():
     """
@@ -58,7 +90,7 @@ def github_storage_stats():
 
     try:
         repo_url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}"
-        r = requests.get(repo_url, headers=_gh_headers(), timeout=20)
+        r = _github_http_session().get(repo_url, timeout=15)
         r.raise_for_status()
         repo_info = r.json()
         repo_size_kb = float(repo_info.get("size", 0) or 0)
@@ -67,11 +99,10 @@ def github_storage_stats():
             f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}"
             f"/contents/dashboard_data"
         )
-        fr = requests.get(
+        fr = _github_http_session().get(
             folder_url,
-            headers=_gh_headers(),
             params={"ref": GH_BRANCH},
-            timeout=20,
+            timeout=15,
         )
 
         data_bytes = 0
@@ -302,14 +333,18 @@ def github_save_result(key, result, updated):
         "result": _storage_safe(result),
         "format_version": 1,
     }
-    # 장기 운영용: pickle 자체를 gzip 압축해서 GitHub 저장 용량과 전송량을 줄임
-    packed = pickle.dumps(payload_obj, protocol=pickle.HIGHEST_PROTOCOL)
-    raw = gzip.compress(packed, compresslevel=6)
+    # v11.47: pickle -> gzip으로 바로 스트리밍.
+    # 큰 결과 저장 시 uncompressed pickle bytes와 compressed bytes를 동시에 들고 있지 않아
+    # 관리자 업데이트 순간의 메모리 피크를 줄인다.
+    _buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=_buf, mode="wb", compresslevel=6) as _gz:
+        pickle.dump(payload_obj, _gz, protocol=pickle.HIGHEST_PROTOCOL)
+    raw = _buf.getvalue()
     path = f"dashboard_data/{key}.pkl"
     url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}/contents/{path}"
 
     # 기존 파일이면 sha가 필요함
-    g = requests.get(url, headers=_gh_headers(), params={"ref": GH_BRANCH}, timeout=30)
+    g = _github_http_session().get(url, params={"ref": GH_BRANCH}, timeout=20)
     sha = g.json().get("sha") if g.status_code == 200 else None
 
     body = {
@@ -320,7 +355,7 @@ def github_save_result(key, result, updated):
     if sha:
         body["sha"] = sha
 
-    r = requests.put(url, headers=_gh_headers(), json=body, timeout=90)
+    r = _github_http_session().put(url, json=body, timeout=60)
     if r.status_code in (200, 201):
         # 방금 저장한 최신 결과가 즉시 보이도록 읽기 캐시/용량 캐시 초기화
         try:
@@ -328,23 +363,37 @@ def github_save_result(key, result, updated):
             github_storage_stats.clear()
         except Exception:
             pass
-        return True, f"GitHub 저장 완료 · 경량 저장 {len(raw)/1024/1024:.2f} MB"
+        _saved_mb = len(raw) / 1024 / 1024
+        # 관리자 저장 때 생긴 base64/json/압축 bytes 임시 객체를 즉시 참조 해제.
+        try:
+            del body, raw, payload_obj, _buf
+        except Exception:
+            pass
+        gc.collect()
+        return True, f"GitHub 저장 완료 · 경량 저장 {_saved_mb:.2f} MB"
     try:
         detail = r.json().get("message", r.text)
     except Exception:
         detail = r.text
     return False, f"GitHub 저장 실패 HTTP {r.status_code}: {detail}"
 
-@st.cache_data(ttl=600, show_spinner=False, max_entries=20)
+@st.cache_data(ttl=300, show_spinner=False, max_entries=6)
 def _github_fetch_raw_cached(key):
     """GitHub에는 압축된 원본 bytes만 공용 캐시한다.
     큰 DataFrame/그래프 객체 자체를 전 페이지·전 세션 공용 캐시에 쌓지 않는다.
     """
     path = f"dashboard_data/{key}.pkl"
     url = f"https://api.github.com/repos/{GH_OWNER}/{GH_DATA_REPO}/contents/{path}"
-    headers = _gh_headers().copy()
-    headers["Accept"] = "application/vnd.github.raw+json"
-    r = requests.get(url, headers=headers, params={"ref": GH_BRANCH}, timeout=60)
+    headers = {"Accept": "application/vnd.github.raw+json"}
+    try:
+        r = _github_http_session().get(
+            url,
+            headers=headers,
+            params={"ref": GH_BRANCH},
+            timeout=15,
+        )
+    except requests.RequestException:
+        return None
     if r.status_code != 200:
         return None
     return bytes(r.content)
@@ -358,9 +407,13 @@ def github_load_result(key):
         raw = _github_fetch_raw_cached(key)
         if not raw:
             return None, None
+        # v11.47: gzip 전체를 먼저 풀어 별도 bytes로 만들지 않고 pickle을 바로 읽는다.
+        # 큰 PNG/표 저장본 로드 때 peak memory를 낮춘다.
         if raw[:2] == b"\x1f\x8b":
-            raw = gzip.decompress(raw)
-        obj = pickle.loads(raw)
+            with gzip.GzipFile(fileobj=io.BytesIO(raw), mode="rb") as _gz:
+                obj = pickle.load(_gz)
+        else:
+            obj = pickle.loads(raw)
         result = obj.get("result")
         updated = obj.get("updated")
 
@@ -394,7 +447,7 @@ def load_active_result_only(active_key):
     """
     result_keys = [
         "liq", "fg", "canary", "rotation", "ai", "jp_tw_market",
-        "us_sector", "kr_sector", "kr_fg", "kr_sio", "tw_revenue",
+        "us_sector", "kr_sector", "kr_flow", "kr_fg", "kr_sio", "tw_revenue",
         "kr_monthly", "us_monthly",
     ]
 
@@ -1094,6 +1147,7 @@ def run_rotation(): return run_source(ROT_SRC)
 
 @st.cache_data(ttl=3600,show_spinner=False)
 def canary():
+    yf = _lazy_yfinance()
     raw=yf.download(["QQQ","TIP"],period="3y",auto_adjust=False,progress=False,threads=False)
     p=raw["Close"] if isinstance(raw.columns,pd.MultiIndex) else raw
     vals={}
@@ -1104,6 +1158,7 @@ def canary():
 
 @st.cache_data(ttl=3600,show_spinner=False)
 def trend_backtest():
+    yf = _lazy_yfinance()
     tickers=["QQQ","SOXX","QLD","PSQ","GLD","SPMO","TIP"]
     today=datetime.today()
     first=today.replace(day=1)
@@ -1943,7 +1998,7 @@ if st.session_state.get("active_page") not in ALL_PAGES:
 
 with st.sidebar:
     st.markdown("## 태린이아빠")
-    st.caption("Market Dashboard · LIVE v11.46")
+    st.caption("Market Dashboard · LIVE v11.47")
     st.link_button(
         "▶ 태린이아빠 주식투자 YouTube",
         "https://www.youtube.com/@Taerins_Dad",
