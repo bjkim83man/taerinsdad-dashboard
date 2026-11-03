@@ -10,6 +10,7 @@ import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+# v11.52: 한국 Fear & Greed 3-tuple 경량 결과 그래프 렌더링 수정
 # v11.51: F&G·AI 화면 전용 경량 저장 · 필요한 그래프만 GitHub 저장
 # v11.45: iPhone·Android 모바일 보기 강화 · safe-area/표/사이드바/1열 레이아웃 보정
 # v11.44: 한국 일별 수급 2파트 재배치 · 기관 평균순위 2종 상위 50개 정확히 표시
@@ -1620,8 +1621,14 @@ def _render_result_figures_only(result, include_title_keywords=None, exclude_tit
 
     payload = None
     figs = []
+    # 결과 형식 호환:
+    # - 일반 run_source / Colab 결과: 5-tuple
+    # - 한국 Fear & Greed 경량 결과: 3-tuple (ok, payload, err)
     try:
-        _, payload, _, _, figs = result
+        if isinstance(result, tuple) and len(result) >= 2:
+            payload = result[1]
+        if isinstance(result, tuple) and len(result) >= 5:
+            figs = result[4] or []
     except Exception:
         payload = None
         figs = []
