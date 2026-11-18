@@ -10,6 +10,7 @@ import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+# v11.58: 미국 52주 개선전략 연도별 수익률 표 연도 표시 오류 수정
 # v11.57: 미국 52주 개선전략 + 미국 ETF RS/Sortino를 공통 HTS Excel(DB) 입력으로 전환 · 해당 2개 메뉴 Yahoo 미사용
 # v11.56: 일본·대만 v6.1 DAILY-FIRST + 아시아 피어그룹 일본·대만 종목/테마 확장
 # v11.54: 미국 52주 신고가 전략 분할가격 오류 방어 · 데이터 처리만 수정, 기존 결과화면 유지
@@ -2156,10 +2157,38 @@ def render_rotation_simple(result):
     st.markdown("### 4. 연도별 수익률")
     yearly = payload.get("yearly")
     if isinstance(yearly, pd.DataFrame) and not yearly.empty:
-        show = yearly.copy().reset_index().rename(columns={"index": "연도"})
+        show = yearly.copy().reset_index()
+
+        # 인덱스 이름이 index / 일자 / 날짜 / 연도 중 무엇이든
+        # 첫 번째 열은 연도 열로 고정하고 % 포맷 대상에서 제외한다.
+        year_col = show.columns[0]
+        if year_col != "연도":
+            show = show.rename(columns={year_col: "연도"})
+
+        def _format_year(x):
+            if pd.isna(x):
+                return "-"
+            if isinstance(x, (pd.Timestamp, datetime)):
+                return str(x.year)
+            try:
+                num = float(x)
+                if 1900 <= num <= 2200:
+                    return str(int(num))
+            except Exception:
+                pass
+            try:
+                return str(pd.to_datetime(x).year)
+            except Exception:
+                return str(x)
+
+        show["연도"] = show["연도"].map(_format_year)
+
+        # 실제 수익률 열에만 % 포맷 적용
         for col in show.columns:
             if col != "연도":
-                show[col] = show[col].map(lambda x: f"{float(x):+.2%}" if pd.notna(x) else "-")
+                show[col] = show[col].map(
+                    lambda x: f"{float(x):+.2%}" if pd.notna(x) else "-"
+                )
         _render_static_df(show)
 
     st.markdown("### 5. 최근 완료된 거래 15건")
