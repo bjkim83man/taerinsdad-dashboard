@@ -10,6 +10,8 @@ import io, contextlib, traceback, time
 import base64, pickle, requests, gzip, re, gc, zipfile, math, posixpath
 from xml.etree import ElementTree as ET
 
+# v11.62: 미국 인버스 혼용 전략 원문 텍스트 전 구간 카드화 · 표/그래프/신호 로직 유지
+# v11.61: 미국 인버스 혼용 결과 확정/임시 상세 박스 표시 · 기존 표/그래프 유지
 # v11.60: 투자전략 메뉴 신설(맨 아래) · 미국 인버스 혼용 전략 독립 Excel/GitHub 계산 · 주도주업종 재배치
 # v11.59: 국내 월단위 V2.6 · Breadth 60~75% 3M RS Top3 + 기존 적응형 변동성 제한, 화면 동일 양식
 # v11.58: 미국 52주 개선전략 연도별 수익률 표 연도 표시 오류 수정
@@ -1732,31 +1734,301 @@ def run_us_inverse_mixed(excel_bytes):
     )
 
 
+def _inverse_pct(v, digits=2):
+    """인버스 혼용 신호의 수치만 보기 좋게 표시. 원 계산값은 변경하지 않는다."""
+    try:
+        x = float(v)
+        return f"{x:.{digits}%}" if np.isfinite(x) else "자료 준비 중"
+    except (TypeError, ValueError):
+        return "자료 준비 중"
+
+
+def _inverse_number(v, digits=2):
+    try:
+        x = float(v)
+        return f"{x:,.{digits}f}" if np.isfinite(x) else "자료 준비 중"
+    except (TypeError, ValueError):
+        return "자료 준비 중"
+
+
+def _render_inverse_position_box(title, subtitle, allocation, signal, status="confirmed"):
+    """미국 월단위 리밸런싱과 동일한 확정/임시 박스 UI. GitHub 기존 저장 결과도 호환."""
+    import html as _html
+    if not isinstance(allocation, (pd.Series, dict)):
+        return False
+    d = signal if isinstance(signal, dict) else {}
+    w = pd.Series(allocation, dtype=float).reindex(
+        ["QQQ", "QLD", "SOXX", "SPMO", "PSQ", "현금"], fill_value=0.0
+    )
+    up = bool(d.get("상승", False))
+    valid = bool(d.get("유효", True))
+    cap = bool(d.get("상승안전핀", False))
+    psq_off = bool(d.get("하락PSQ제거", False))
+    ratio = d.get("변동성배율", np.nan)
+    try:
+        shock_in_down = (not up and np.isfinite(float(ratio)) and float(ratio) >= 2.0)
+    except (TypeError, ValueError):
+        shock_in_down = False
+
+    invested = sum(float(w.get(t, 0)) for t in ["QQQ", "QLD", "SOXX", "SPMO", "PSQ"])
+    position = " / ".join(
+        f"{t} {_inverse_pct(w[t], 0)}"
+        for t in ["QQQ", "QLD", "SOXX", "SPMO", "PSQ", "현금"]
+        if float(w[t]) > 1e-8
+    ) or "현금 100%"
+    rows = [
+        ("신호 관측일", _fmt_signal_date(d.get("신호일"))),
+        ("시장 상태", "신호 준비 중" if not valid else "상승추세" if up else "하락추세"),
+        ("최종 목표 포지션", position),
+        ("투자비중 / 현금비중", f"{_inverse_pct(invested, 0)} / {_inverse_pct(w['현금'], 0)}"),
+        ("포지션 선정 이유", d.get("판단근거", "-")),
+        ("QQQ 6개월선", f"{_inverse_number(d.get('QQQ_6개월선'))} / " + ("상회" if d.get("QQQ_6개월선_상회") else "이탈")),
+        ("TIP 6개월선", f"{_inverse_number(d.get('TIP_6개월선'))} / " + ("상회" if d.get("TIP_6개월선_상회") else "이탈")),
+        ("QQQ 최근 3개월 수익률", _inverse_pct(d.get("QQQ_3개월수익률"))),
+        ("QLD / SOXX 편입 조건", ("적격" if d.get("QLD조건") else "미충족") + " / " + ("적격" if d.get("SOXX조건") else "미충족")),
+        ("SOXX 6개월선", _inverse_number(d.get("SOXX_6개월선"))),
+        ("QQQ 20일 연율화 변동성", _inverse_pct(d.get("VOL20"))),
+        ("과거 3년 VOL20 중앙값", _inverse_pct(d.get("과거3년VOL20중앙값"))),
+        ("변동성 충격 배율", _inverse_number(ratio, 2) + "배" if pd.notna(ratio) else "자료 준비 중"),
+        ("상승장 변동성 안전핀", "발동 · QQQ 50% / 현금 50%" if cap else "하락장에는 적용 안 함" if shock_in_down else "미발동"),
+        ("QQQ 252일 고점 대비 낙폭", _inverse_pct(d.get("QQQ_DD252"))),
+        ("직전 월말 20일 변동성", _inverse_pct(d.get("직전월말VOL20"))),
+        ("20일 변동성 전월 대비", "하락" if d.get("변동성하락") else "하락 조건 미충족"),
+        ("하락장 PSQ 제거", "발동 · SPMO 50% / 현금 50%" if psq_off else "미발동"),
+    ]
+    if not up and not psq_off and valid:
+        dd = d.get("QQQ_DD252", np.nan)
+        try:
+            sufficient_dd = np.isfinite(float(dd)) and float(dd) <= -0.30
+        except (TypeError, ValueError):
+            sufficient_dd = False
+        rows.append(("PSQ 유지 이유", "QQQ 낙폭 -30% 조건 미달" if not sufficient_dd else "전월 말 대비 변동성 하락 조건 미달"))
+
+    row_html = "".join(
+        '<div class="td-monthly-row">'
+        f'<div class="td-monthly-label">{_html.escape(str(label))}</div>'
+        f'<div class="td-monthly-value">{_html.escape(str(value))}</div>'
+        '</div>'
+        for label, value in rows
+    )
+    status_class = "confirmed" if status == "confirmed" else "preview"
+    badge = "이번달 실제 운용 · 확정" if status == "confirmed" else "다음달 예상 · 임시"
+    st.markdown(
+        f'<div class="td-monthly-panel {status_class}">'
+        f'<div class="td-monthly-head">'
+        f'<div class="td-monthly-badge">{_html.escape(badge)}</div>'
+        f'<div class="td-monthly-title">{_html.escape(str(title))}</div>'
+        f'<div class="td-monthly-sub">{_html.escape(str(subtitle))}</div>'
+        '</div>'
+        f'<div class="td-monthly-grid">{row_html}</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    return True
+
+
+def _inverse_console_sections(text):
+    """Colab section() 헤더 기준으로 텍스트를 구획한다. 원본 표/그림은 건드리지 않는다."""
+    pat = re.compile(r"(?m)^={30,}[ \t]*\n([^\n]+)\n={30,}[ \t]*(?:\n|$)")
+    found = list(pat.finditer(str(text)))
+    if not found:
+        return [(None, str(text))] if str(text).strip() else []
+    sections = []
+    before = str(text)[:found[0].start()].strip()
+    if before:
+        sections.append((None, before))
+    for i, hit in enumerate(found):
+        end = found[i + 1].start() if i + 1 < len(found) else len(text)
+        sections.append((hit.group(1).strip(), str(text)[hit.end():end].strip()))
+    return sections
+
+
+def _render_inverse_text_panel(heading, body):
+    """인버스 혼용 텍스트 결과를 제목/설명/수치 행으로 나눈 가독성 패널로 표시."""
+    import html as _html
+
+    def esc(val):
+        return _html.escape(str(val), quote=True)
+
+    lines = [str(line).strip() for line in str(body).splitlines() if str(line).strip()]
+    rows = []
+    for line in lines:
+        # 분리된 콘솔 표의 구분선은 시각적 노이즈라 숨김.
+        if re.fullmatch(r"[=\-─]{20,}", line):
+            continue
+        # '[해석]', '[주의]'는 레이블이 문장 앞에 오는 주석으로 표시.
+        mm = re.match(r"^\[([^\]]{1,20})\]\s*(.+)$", line)
+        if mm:
+            rows.append(
+                '<div class="td-inverse-note-line"><span class="td-inverse-note-tag">'
+                + esc(mm.group(1)) + '</span> ' + esc(mm.group(2)) + '</div>'
+            )
+            continue
+        # ':', '：' 로 구분된 신호명/값은 두 칸으로 정돈.
+        kv = re.match(r"^([^:：]{1,45})\s*[:：]\s*(.+)$", line)
+        if kv:
+            rows.append(
+                '<div class="td-inverse-info-row">'
+                '<div class="td-inverse-info-label">' + esc(kv.group(1).strip()) + '</div>'
+                '<div class="td-inverse-info-value">' + esc(kv.group(2).strip()) + '</div>'
+                '</div>'
+            )
+        else:
+            rows.append('<div class="td-inverse-prose">' + esc(line) + '</div>')
+
+    title_html = '<div class="td-inverse-text-heading">' + esc(heading) + '</div>' if heading else ''
+    body_html = ''.join(rows)
+    if not (title_html or body_html):
+        return
+    compact = ' compact' if not rows else ''
+    st.markdown(
+        '<section class="td-inverse-text-panel' + compact + '">' + title_html + body_html + '</section>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_inverse_existing_tables_graphs(result):
+    """인버스 혼용의 모든 설명 텍스트를 카드화, 기존 표·그래프의 내용과 순서는 유지."""
+    if not isinstance(result, tuple) or len(result) < 2:
+        render_colab_result(result)
+        return
+    payload = result[1]
+    if not isinstance(payload, dict) or payload.get("colab_events") is None:
+        render_colab_result(result)
+        return
+
+    st.markdown("""
+    <style>
+    .td-inverse-text-panel{
+      margin:10px 0 16px 0;padding:15px 18px;
+      background:#0b1628;border:1px solid #2b3d5e;border-radius:13px;
+      color:#f5f7fc;overflow-wrap:anywhere;
+    }
+    .td-inverse-text-panel.compact{padding:11px 17px;margin-top:14px;margin-bottom:9px;}
+    .td-inverse-text-heading{
+      font-size:1.04rem;font-weight:800;line-height:1.4;color:#f4f7fd;
+      margin:0 0 10px 0;
+    }
+    .td-inverse-text-panel.compact .td-inverse-text-heading{margin-bottom:0;}
+    .td-inverse-info-row{
+      display:grid;grid-template-columns:minmax(130px,210px) minmax(0,1fr);
+      border-top:1px solid rgba(160,180,210,.13);padding:8px 3px;gap:12px;
+    }
+    .td-inverse-info-label{font-size:.88rem;font-weight:700;color:#aebed5;}
+    .td-inverse-info-value{font-size:.91rem;line-height:1.55;color:#f5f7fc;min-width:0;}
+    .td-inverse-prose{font-size:.91rem;line-height:1.6;color:#e2eaf7;padding:4px 3px;}
+    .td-inverse-note-line{font-size:.88rem;line-height:1.6;color:#bdcbe0;margin:6px 3px;}
+    .td-inverse-note-tag{font-weight:800;color:#9fc9ff;}
+    @media (max-width:768px){
+      .td-inverse-text-panel{padding:12px 11px;max-width:100%;}
+      .td-inverse-text-heading{font-size:.96rem;}
+      .td-inverse-info-row{grid-template-columns:1fr;gap:1px;padding:8px 2px;}
+      .td-inverse-info-label{font-size:.80rem;}
+      .td-inverse-info-value,.td-inverse-prose{font-size:.87rem;}
+      .td-inverse-note-line{font-size:.83rem;}
+    }
+    .colab-table-wrap{overflow-x:auto;margin:4px 0 18px 0}
+    table.colab-static-table{border-collapse:collapse;font-size:.88rem;white-space:nowrap;background:transparent}
+    table.colab-static-table th,table.colab-static-table td{border:1px solid rgba(128,128,128,.28);
+      padding:5px 8px;text-align:right}
+    table.colab-static-table th{font-weight:700;background:rgba(128,128,128,.08)}
+    </style>
+    """, unsafe_allow_html=True)
+
+    for ev in payload.get("colab_events") or []:
+        typ = ev.get("type") if isinstance(ev, dict) else None
+        if typ == "text":
+            t = ev.get("text", "")
+            if not str(t).strip():
+                continue
+            for heading, body in _inverse_console_sections(t):
+                if heading:
+                    # 확정·예비 포지션 본문은 위의 자세한 두 박스가 대체.
+                    if (heading.startswith("이번 달 확정 |")
+                            or heading.startswith("다음 달 임시 예비 |")
+                            or heading == "다음 달 예비 포지션"):
+                        continue
+                label = heading or "해석 및 유의사항"
+                _render_inverse_text_panel(label, body)
+        elif typ == "table":
+            _render_static_df(ev.get("data"))
+        elif typ == "html":
+            h = ev.get("html", "")
+            if h:
+                st.markdown(f'<div class="colab-table-wrap">{h}</div>', unsafe_allow_html=True)
+        elif typ == "figure":
+            _render_saved_fig(ev.get("figure"))
+
+
 def render_us_inverse_mixed(result):
-    """확정/임시 목표비중 요약을 보여주고, 상세 표/그래프는 기존 Colab 방식 유지."""
+    """인버스 혼용 전략: 미국 월단위 전략과 동일한 확정/임시 상세 박스 + 기존 표/그래프."""
     if not result or not result[0]:
         render_colab_result(result)
         return
     payload = result[1] if len(result) > 1 and isinstance(result[1], dict) else {}
-    s = payload.get("dashboard_inverse_summary", {})
-    if isinstance(s, dict) and s:
-        current, preview = s.get("current_allocation"), s.get("next_allocation")
-        for title, w, signal in [
-            ("이번 달 확정 포지션", current, s.get("confirmed_signal", {})),
-            ("다음 달 임시 예비 포지션", preview, s.get("preview_signal", {})),
-        ]:
-            if not isinstance(w, pd.Series):
-                continue
-            st.markdown("### " + title)
-            d = signal if isinstance(signal, dict) else {}
-            note = str(d.get("판단근거", ""))
-            st.caption(f"월말 신호 {d.get('신호일', '-')} · {note}")
-            parts = [f"{a} {float(v):.0%}" for a, v in w.items() if float(v) > 1e-10]
-            st.info(" / ".join(parts) or "현금 100%")
-        st.caption("월말에만 리밸런싱합니다. 다음 달 예비 목표는 월중 확인용이며 매매 확정 신호가 아닙니다.")
-        st.divider()
-        st.markdown("### 상세 백테스트 · 연도별 성과 · QQQ 비교 그래프")
-    render_colab_result(result)
+    summary = payload.get("dashboard_inverse_summary", {})
+    if not isinstance(summary, dict) or not summary:
+        st.info("이전 저장 결과에는 포지션 상세 데이터가 없습니다. 관리자에서 최신 Excel로 다시 계산·저장하면 상세 박스가 표시됩니다.")
+        render_colab_result(result)
+        return
+
+    confirmed = summary.get("current_allocation")
+    preview = summary.get("next_allocation")
+    cur_m = summary.get("confirmed_month")
+    pre_m = summary.get("preview_month")
+    if cur_m is not None:
+        try:
+            cur_m = pd.Period(cur_m, freq="M") + 1
+        except Exception:
+            cur_m = None
+    if pre_m is not None:
+        try:
+            pre_m = pd.Period(pre_m, freq="M") + 1
+        except Exception:
+            pre_m = None
+
+    if isinstance(confirmed, (pd.Series, dict)):
+        cur_signal = summary.get("confirmed_signal", {})
+        obs = _fmt_signal_date(cur_signal.get("신호일")) if isinstance(cur_signal, dict) else "-"
+        _render_inverse_position_box(
+            f"{_month_label(cur_m) if cur_m is not None else '이번 달'} 실제 운용 포지션 · 확정",
+            f"{obs} 월말 신호로 확정된 이번 달 목표비중 · 월중 매매 없음",
+            confirmed, cur_signal, status="confirmed",
+        )
+    if isinstance(preview, (pd.Series, dict)):
+        pre_signal = summary.get("preview_signal", {})
+        obs = _fmt_signal_date(pre_signal.get("신호일")) if isinstance(pre_signal, dict) else "-"
+        _render_inverse_position_box(
+            f"{_month_label(pre_m) if pre_m is not None else '다음 달'} 예상 포지션 · 임시 체크",
+            f"{obs} 현재 데이터로 계산한 예비 비중 · 월말 확정 전까지 변경 가능",
+            preview, pre_signal, status="preview",
+        )
+    else:
+        st.info("최신 월이 이미 마감된 데이터인 경우 다음 달 월중 임시 신호는 별도로 생성되지 않습니다.")
+
+    if isinstance(confirmed, (pd.Series, dict)) and isinstance(preview, (pd.Series, dict)):
+        a = pd.Series(confirmed, dtype=float).reindex(["QQQ","QLD","SOXX","SPMO","PSQ","현금"], fill_value=0)
+        b = pd.Series(preview, dtype=float).reindex(a.index, fill_value=0)
+        same = bool(np.allclose(a.values, b.values, atol=1e-10))
+        current_txt = " / ".join(f"{k} {v:.0%}" for k,v in a.items() if v > 1e-10)
+        next_txt = " / ".join(f"{k} {v:.0%}" for k,v in b.items() if v > 1e-10)
+        st.markdown("### 현재 포지션 → 다음 달 예상 포지션 해석")
+        st.markdown(
+            f"현재 데이터 기준 **{next_txt} 유지 예상**" if same
+            else f"현재 **{current_txt}** → 다음 달 임시 **{next_txt}**"
+        )
+        cs = summary.get("confirmed_signal", {})
+        ps = summary.get("preview_signal", {})
+        if isinstance(cs, dict) and isinstance(ps, dict):
+            st.caption(
+                f"QQQ 252일 DD {_inverse_pct(cs.get('QQQ_DD252'),1)} → {_inverse_pct(ps.get('QQQ_DD252'),1)} · "
+                f"변동성 충격 {_inverse_number(cs.get('변동성배율'))}배 → {_inverse_number(ps.get('변동성배율'))}배 · "
+                "임시 신호는 실제 매매 신호가 아닙니다."
+            )
+
+    st.markdown("---")
+    st.markdown("### 기존 백테스트 표 · 연도별 수익률 · QQQ 비교 그래프")
+    _render_inverse_existing_tables_graphs(result)
 
 def run_monthly_rebalance(source, excel_bytes, excel_name, market):
     upload_files = _DashboardUploadFiles(excel_bytes, excel_name)
